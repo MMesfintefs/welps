@@ -1,10 +1,5 @@
 streamlit==1.39.0
-openai>=1.48.0
-yfinance>=0.2.43
-newsapi-python>=0.2.7
-python-dotenv>=1.0.1
-pandas>=2.2.2
-plotly>=5.24.1
-requests>=2.32.3
-textblob
-reportlab
+yfinance==0.2.66
+pandas==2.2.2
+plotly==5.24.1
+requests==2.32.3
