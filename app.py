@@ -1,98 +1,74 @@
-import os, re, requests, datetime, json
+# =============================
+# NOVA 😊 — Assistant
+# =============================
+
+import os, re, json, requests
 import streamlit as st
 import pandas as pd
 import plotly.express as px
 import yfinance as yf
 from openai import OpenAI
 
-# -------------------- imports from your modules --------------------
-from analysis import compute_market_mood, decision_signal, get_finance_news
-from report import generate_daily_report
+# -------------------- CONFIG --------------------
+st.set_page_config(page_title="NOVA 😊", page_icon="💹", layout="wide")
 
-# -------------------- page setup --------------------
-st.set_page_config(page_title="NOVA", page_icon="😊", layout="wide")
+st.markdown("<h1 style='text-align:center'>NOVA 😊</h1>", unsafe_allow_html=True)
+st.markdown("<p style='text-align:center'>Your assistant — ask about stocks, prices, trends, or news.</p>", unsafe_allow_html=True)
 
-# -------------------- OpenAI brain --------------------
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+# -------------------- API KEYS --------------------
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+NEWS_API_KEY = os.getenv("NEWS_API_KEY")
 
-def nova_brain(prompt, context=""):
-    system_prompt = """You are NOVA 😊 — a conversational market assistant.
-    You greet users, explain insights clearly, and can fetch stock data, news, or macro info.
-    If unclear, ask clarifying questions. Speak naturally with a hint of personality.
-    """
-    response = client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": prompt},
-            {"role": "assistant", "content": context},
-        ]
-    )
-    return response.choices[0].message.content
+if not OPENAI_API_KEY:
+    st.error("⚠️ Missing OpenAI API key in your `.streamlit/secrets.toml` file.")
+    st.stop()
 
-# -------------------- helpers --------------------
-VALID_PERIODS = ["7d","1mo","3mo","6mo","1y","ytd","max"]
+client = OpenAI(api_key=OPENAI_API_KEY)
+
+# -------------------- FUNCTIONS --------------------
+
+def nova_brain(prompt: str, context: str = "") -> str:
+    """Handles NOVA's chat responses."""
+    try:
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": "You are NOVA 😊 — a conversational market t who provides finance insights, explains data clearly, and answers questions naturally."},
+                {"role": "user", "content": prompt},
+            ],
+        )
+        return response.choices[0].message.content
+    except Exception as e:
+        return f"❌ OpenAI API error: {str(e)}"
+
 
 @st.cache_data(ttl=600)
-def get_macro_snapshot():
-    fred_key = os.getenv("FRED_API_KEY")
-    if not fred_key:
-        return {"Inflation": "N/A", "Unemployment": "N/A", "FedRate": "N/A"}
+def get_stock_data(ticker: str, period: str = "6mo"):
+    """Fetch stock data from Yahoo Finance."""
     try:
-        base = "https://api.stlouisfed.org/fred/series/observations"
-        def fred_series(series_id):
-            r = requests.get(base, params={
-                "series_id": series_id,
-                "api_key": fred_key,
-                "file_type": "json"
-            }, timeout=10)
-            r.raise_for_status()
-            return float(r.json()["observations"][-1]["value"])
-        return {
-            "Inflation": f"{fred_series('CPIAUCSL'):.1f} (CPI idx)",
-            "Unemployment": f"{fred_series('UNRATE'):.1f}%",
-            "FedRate": f"{fred_series('FEDFUNDS'):.2f}%"
-        }
-    except Exception:
-        return {"Inflation": "N/A", "Unemployment": "N/A", "FedRate": "N/A"}
-
-def get_stock_data(ticker: str, period: str = "1mo"):
-    try:
-        t = yf.Ticker(ticker)
-        hist = t.history(period=period, interval="1d")
-        if hist.empty:
+        data = yf.download(ticker, period=period, interval="1d", progress=False)
+        if data.empty:
             return None
-        price = hist["Close"].iloc[-1]
-        prev  = hist["Close"].iloc[-2] if len(hist) > 1 else price
-        pct   = (price - prev) / prev * 100 if prev else 0
-        return {
-            "ticker": ticker.upper(),
-            "pct": round(pct,2),
-            "history": hist.reset_index()[["Date","Close"]],
-        }
+        data.reset_index(inplace=True)
+        return data
     except Exception:
         return None
 
-def summarize_emails():
-    fake_emails = [
-        {"subject": "Market Update", "body": "Inflation fell slightly this month."},
-        {"subject": "Tesla Earnings", "body": "Tesla beats estimates with higher delivery numbers."}
-    ]
-    return nova_brain("Summarize these emails:\n" + json.dumps(fake_emails))
 
-# -------------------- UI --------------------
-left, mid, right = st.columns([1,2,1])
-with mid:
-    st.markdown("<h1 style='text-align:center'>NOVA 😊</h1>", unsafe_allow_html=True)
-    st.markdown("<p style='text-align:center'>Your conversational market assistant. Ask about stocks, news, macro, or reports.</p>", unsafe_allow_html=True)
+@st.cache_data(ttl=600)
+def get_finance_news(topic="stocks"):
+    """Fetch top news from NewsAPI."""
+    try:
+        if not NEWS_API_KEY:
+            return []
+        url = f"https://newsapi.org/v2/everything?q={topic}&language=en&sortBy=publishedAt&pageSize=5&apiKey={NEWS_API_KEY}"
+        r = requests.get(url, timeout=10)
+        articles = r.json().get("articles", [])
+        return [{"title": a["title"], "source": a["source"]["name"], "url": a["url"]} for a in articles]
+    except Exception:
+        return []
 
-with left:
-    st.markdown("### Macro Snapshot")
-    macro = get_macro_snapshot()
-    for k,v in macro.items():
-        st.metric(k, v)
-
-# -------------------- Chat memory --------------------
+# -------------------- CHAT MEMORY --------------------
 if "history" not in st.session_state:
     st.session_state.history = []
 
@@ -100,7 +76,7 @@ for msg in st.session_state.history:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
 
-# -------------------- Chat input --------------------
+# -------------------- MAIN CHAT INPUT --------------------
 user_text = st.chat_input("Ask NOVA anything...")
 
 if user_text:
@@ -108,58 +84,44 @@ if user_text:
     with st.chat_message("user"):
         st.markdown(user_text)
 
-    # --- Decide intent ---
     text = user_text.lower()
+    reply = ""
 
-    if "stock" in text or "analyze" in text or "price" in text:
-        tickers = re.findall(r"\b[A-Z]{1,5}(?:-[A-Z]{2,4})?\b", user_text.upper())
+    # ---- STOCKS ----
+    if any(word in text for word in ["stock", "price", "analyze", "chart", "trend"]):
+        tickers = re.findall(r"\b[A-Z]{1,5}\b", user_text.upper())
         if not tickers:
-            reply = "Please mention one or more tickers, e.g., `AAPL, MSFT`."
+            reply = "Please provide a valid stock ticker (e.g., AAPL, TSLA, MSFT)."
         else:
-            period = "1mo"
-            reply = f"Analyzing {', '.join(tickers)} for {period}..."
-            st.markdown(reply)
             for t in tickers:
-                data = get_stock_data(t, period)
-                if data:
-                    df = pd.DataFrame(data["history"])
-                    fig = px.line(df, x="Date", y="Close", title=f"{t} ({period})")
+                st.markdown(f"### 📈 {t} — 6-Month Performance")
+                data = get_stock_data(t)
+                if not data is None:
+                    fig = px.line(data, x="Date", y="Close", title=f"{t} Stock Price")
                     st.plotly_chart(fig, use_container_width=True)
-                    sig = decision_signal(df.rename(columns={"Close":"close"}))
-                    st.caption(f"Signal: {sig}")
-        st.session_state.history.append({"role": "assistant", "content": reply})
+                    change = (data["Close"].iloc[-1] - data["Close"].iloc[0]) / data["Close"].iloc[0] * 100
+                    st.caption(f"Performance: **{change:.2f}%** over 6 months.")
+                else:
+                    st.warning(f"Couldn’t fetch data for {t}. It might be invalid or temporarily unavailable.")
 
-    elif "news" in text:
+            reply = "Here’s the stock data you requested."
+
+    # ---- NEWS ----
+    elif "news" in text or "headline" in text:
         topic = re.sub(r"news|headline|about", "", text).strip() or "markets"
         news = get_finance_news(topic)
         if news:
-            reply = f"**Top headlines for {topic}:**\n"
-            for n in news[:5]:
-                reply += f"• **{n['title']}** — {n['source']}\n"
-            mood = compute_market_mood(news)
-            reply += f"\nMarket Mood: {mood}/100"
+            reply = f"🗞 **Top headlines for {topic}:**\n"
+            for n in news:
+                reply += f"- [{n['title']}]({n['url']}) — *{n['source']}*\n"
         else:
-            reply = "Couldn't find recent news."
-        st.session_state.history.append({"role": "assistant", "content": reply})
-        with st.chat_message("assistant"):
-            st.markdown(reply)
+            reply = "Couldn't find recent financial news. Try again later."
 
-    elif "email" in text:
-        reply = summarize_emails()
-        with st.chat_message("assistant"):
-            st.markdown(reply)
-        st.session_state.history.append({"role": "assistant", "content": reply})
-
-    elif "macro" in text:
-        reply = "**Latest macro snapshot:**"
-        st.markdown(reply)
-        cols = st.columns(3)
-        for (k,v), c in zip(macro.items(), cols):
-            with c: st.metric(k, v)
-        st.session_state.history.append({"role": "assistant", "content": reply})
-
+    # ---- GENERAL QUESTIONS ----
     else:
         reply = nova_brain(user_text)
-        with st.chat_message("assistant"):
-            st.markdown(reply)
-        st.session_state.history.append({"role": "assistant", "content": reply})
+
+    # ---- DISPLAY ----
+    with st.chat_message("assistant"):
+        st.markdown(reply)
+    st.session_state.history.append({"role": "assistant", "content": reply})
