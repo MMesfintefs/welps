@@ -1,139 +1,201 @@
-import os, requests, datetime
+import os, re, requests, datetime
 import streamlit as st
 import pandas as pd
 import plotly.express as px
 import yfinance as yf
-from dotenv import load_dotenv
 
-# local modules (you’ll add these next)
+# Brains you already have
 from analysis import compute_market_mood, decision_signal, get_finance_news
 from report import generate_daily_report
 
-load_dotenv()
-st.set_page_config(page_title="Agentic AI Market Assistant", page_icon="🧠", layout="wide")
+st.set_page_config(page_title="NOVA", page_icon="😊", layout="wide")
 
-# ---------- UTILITIES ----------
+# -------------------- helpers --------------------
+VALID_PERIODS = ["7d","1mo","3mo","6mo","1y","ytd","max"]
+
+@st.cache_data(ttl=600)
+def get_macro_snapshot():
+    """FRED snapshot; falls back to placeholders if no key."""
+    fred_key = os.getenv("FRED_API_KEY")
+    if not fred_key:
+        return {"Inflation": "N/A", "Unemployment": "N/A", "FedRate": "N/A"}
+    try:
+        base = "https://api.stlouisfed.org/fred/series/observations"
+        def fred_series(series_id):
+            r = requests.get(base, params={"series_id": series_id,
+                                           "api_key": fred_key, "file_type":"json"}, timeout=10)
+            r.raise_for_status()
+            return float(r.json()["observations"][-1]["value"])
+        # These are representative; tweak to what you prefer
+        unemp = fred_series("UNRATE")
+        fed = fred_series("FEDFUNDS")
+        # CPIAUCSL is an index; keep simple and show latest level
+        cpi = fred_series("CPIAUCSL")
+        return {"Inflation": f"{cpi:.1f} (CPI idx)", "Unemployment": f"{unemp:.1f}%", "FedRate": f"{fed:.2f}%"}
+    except Exception:
+        return {"Inflation": "N/A", "Unemployment": "N/A", "FedRate": "N/A"}
+
 def get_stock_data(ticker: str, period: str = "1mo"):
-    """Fetch price history for any U.S. ticker."""
     try:
         t = yf.Ticker(ticker)
         hist = t.history(period=period, interval="1d")
         if hist.empty:
             return None
         price = hist["Close"].iloc[-1]
-        prev = hist["Close"].iloc[-2] if len(hist) > 1 else price
-        change = price - prev
-        pct = (change / prev) * 100
-        hist = hist.reset_index()[["Date", "Close"]]
-        return {"ticker": ticker.upper(), "price": round(price,2),
-                "change": round(change,2), "pct": round(pct,2), "history": hist}
+        prev  = hist["Close"].iloc[-2] if len(hist) > 1 else price
+        pct   = (price - prev) / prev * 100 if prev else 0
+        return {
+            "ticker": ticker.upper(),
+            "pct": round(pct,2),
+            "history": hist.reset_index()[["Date","Close"]],
+        }
     except Exception:
         return None
 
-@st.cache_data(ttl=600)
-def get_macro_snapshot():
-    """Pull basic U.S. macro indicators from FRED."""
-    fred_api = os.getenv("FRED_API_KEY")
-    if not fred_api:
-        return {"Inflation": "3.4%", "Unemployment": "3.9%", "FedRate": "5.25%"}
-    try:
-        base = "https://api.stlouisfed.org/fred/series/observations"
-        def fred_series(series_id):
-            r = requests.get(base, params={"series_id": series_id,
-                                           "api_key": fred_api, "file_type":"json"})
-            data = r.json()["observations"][-1]["value"]
-            return float(data)
-        inflation = fred_series("CPIAUCSL")
-        unemp = fred_series("UNRATE")
-        fed = fred_series("FEDFUNDS")
-        return {"Inflation": f"{inflation:.1f}%", "Unemployment": f"{unemp:.1f}%", "FedRate": f"{fed:.2f}%"}
-    except Exception:
-        return {"Inflation": "N/A", "Unemployment": "N/A", "FedRate": "N/A"}
+def parse_request(text: str):
+    """
+    Very light intent parser.
+    Returns dict like {"intent":"analyze","tickers":[...],"period":"1mo"}
+                    or {"intent":"news","topic":"..."}
+                    or {"intent":"macro"}
+                    or {"intent":"report","tickers":[...]}
+    """
+    t = text.strip().lower()
 
-# ---------- PAGE HEADER ----------
-st.markdown("<h1>🙂 Nova </h1>", unsafe_allow_html=True)
-st.caption("Data from Yahoo Finance, NewsAPI, and the U.S. Federal Reserve (FRED).")
+    # report
+    if t.startswith("report"):
+        tickers = re.findall(r"[a-zA-Z]{1,5}(?:-[A-Z]{2,4})?", text.upper())
+        return {"intent":"report", "tickers": list(dict.fromkeys(tickers)) or []}
 
-# Sidebar – portfolio & macro data
-st.sidebar.header("📊 Macro Snapshot")
-macros = get_macro_snapshot()
-for k,v in macros.items():
-    st.sidebar.metric(k, v)
+    # macro
+    if t.startswith("macro"):
+        return {"intent":"macro"}
 
-portfolio_tickers = st.sidebar.text_input("My Portfolio", "AAPL, MSFT, NVDA, TSLA, AMZN")
-user_tickers = [t.strip().upper() for t in portfolio_tickers.split(",") if t.strip()]
+    # news
+    if t.startswith("news") or t.startswith("headline"):
+        topic = t.split(":",1)[1].strip() if ":" in t else t.replace("news","").strip()
+        topic = topic or "markets"
+        return {"intent":"news", "topic": topic}
 
-# Tabs
-tab1, tab2, tab3 = st.tabs(["📈 Market Overview", "📥 Inbox Assistant (Demo)", "📄 Daily Report"])
+    # analyze stocks
+    if "analyze" in t or "for" in t or "," in t:
+        # find period keyword
+        period = None
+        for p in VALID_PERIODS:
+            if re.search(rf"\b{p}\b", t):
+                period = p
+                break
+        if not period: period = "1mo"
 
-# ---------- TAB 1: Market Overview ----------
-with tab1:
-    st.subheader("Market Overview & Sentiment Analysis")
-    period = st.selectbox("Select time range", ["7d","1mo","3mo","6mo","1y","ytd","max"], index=2)
-    topic = st.text_input("Market topic focus", "tech, inflation, energy, yields")
+        # extract tickers (AAPL, MSFT, BTC-USD, etc.)
+        tickers = re.findall(r"\b[A-Z]{1,5}(?:-[A-Z]{2,4})?\b", text.upper())
+        tickers = [x for x in tickers if x not in VALID_PERIODS]
+        tickers = list(dict.fromkeys(tickers))  # de-dupe, preserve order
+        return {"intent":"analyze", "tickers": tickers or [], "period": period}
 
-    if st.button("Run Market Analysis 🚀"):
-        stocks = [s for s in (get_stock_data(t, period) for t in user_tickers) if s]
-        if not stocks:
-            st.error("No valid stock data found.")
-        else:
-            avg = sum(s["pct"] for s in stocks) / len(stocks)
-            sentiment = "Cautious" if avg < 0 else "Constructive"
-            st.metric("Market Outlook", sentiment, f"{avg:.2f}% avg daily move")
+    return {"intent":"help"}
 
-            for s in stocks:
-                df = pd.DataFrame(s["history"])
-                fig = px.line(df, x="Date", y="Close", title=f"{s['ticker']} ({period})")
-                st.plotly_chart(fig, use_container_width=True)
-                sig = decision_signal(df.rename(columns={"Close":"close"}))
-                st.caption(f"Signal: {sig}")
+def render_help():
+    st.markdown("""
+**Try these:**
+- `analyze AAPL, NVDA for 3mo`
+- `news: inflation and energy`
+- `macro`
+- `report for AAPL, MSFT, TSLA`
+""")
 
-            # credible news + mood
+# -------------------- UI --------------------
+# Title row
+left, mid, right = st.columns([1,2,1])
+with mid:
+    st.markdown("<h1 style='text-align:center'>NOVA 😊</h1>", unsafe_allow_html=True)
+    st.markdown("<p style='text-align:center'>Your agentic market assistant. Ask for analysis, news, macro, or a report.</p>", unsafe_allow_html=True)
+
+# Macro snapshot on the left as lightweight context
+with left:
+    st.markdown("### Macro Snapshot")
+    macro = get_macro_snapshot()
+    for k,v in macro.items():
+        st.metric(k, v)
+
+# Chat history container
+if "chat" not in st.session_state:
+    st.session_state.chat = []
+chat_box = st.container()
+
+# Replay prior messages
+with chat_box:
+    for role, content in st.session_state.chat:
+        with st.chat_message(role):
+            st.markdown(content)
+
+# Input
+user_text = st.chat_input("Type a request... e.g., analyze AAPL, NVDA for 1mo")
+if user_text:
+    # user message
+    st.session_state.chat.append(("user", user_text))
+    with st.chat_message("user"):
+        st.markdown(user_text)
+
+    intent = parse_request(user_text)
+
+    with st.chat_message("assistant"):
+        if intent["intent"] == "help":
+            render_help()
+
+        elif intent["intent"] == "macro":
+            st.markdown("**Latest macro snapshot:**")
+            cols = st.columns(3)
+            for (k,v), c in zip(macro.items(), cols):
+                with c: st.metric(k, v)
+
+        elif intent["intent"] == "news":
+            topic = intent["topic"]
+            st.markdown(f"**Headlines for:** `{topic}`")
             news = get_finance_news(topic)
-            st.markdown("### 📰 Top Headlines (Reuters, Bloomberg, WSJ, CNBC, MarketWatch)")
             for n in news:
                 st.write(f"• **{n['title']}** — {n['source']}")
             mood = compute_market_mood(news)
             st.metric("Market Mood", f"{mood}/100")
 
-# ---------- TAB 2: Inbox Assistant ----------
-with tab2:
-    st.subheader("Inbox Intelligence Assistant (Demo Inbox)")
-    demo_emails = [
-        {"from":"Sarah Chen <sarah@recruiter.com>",
-         "subject":"Data Analyst Internship – Quick Intro Call",
-         "body":"Are you free for a 15-minute call next week?",
-         "category":"To Reply"},
-        {"from":"Investment Club <club@bentley.edu>",
-         "subject":"Tonight: Semiconductor Outlook Discussion",
-         "body":"Bring one slide on NVDA/TSMC outlook.",
-         "category":"Finance"},
-        {"from":"Mom <mom@example.com>",
-         "subject":"Proud of you!",
-         "body":"Call me when you can. Love, Mom",
-         "category":"Personal"},
-    ]
-    if st.button("Analyze Inbox 🧠"):
-        for email in demo_emails:
-            st.markdown(f"### {email['category']}")
-            with st.container(border=True):
-                st.markdown(f"**{email['subject']}**")
-                st.caption(email["from"])
-                st.write(email["body"])
-                if email["category"] in ["To Reply","Finance"]:
-                    st.code(
-                        f"Hi, thanks for your message about '{email['subject']}'. I'll follow up soon.\n\nBest,\nMichael",
-                        language="markdown"
-                    )
+        elif intent["intent"] == "analyze":
+            tickers = intent["tickers"]
+            period  = intent["period"]
+            if not tickers:
+                st.warning("Give me at least one ticker. Example: `analyze AAPL, MSFT for 3mo`")
+            else:
+                st.markdown(f"**Analyzing:** {', '.join(tickers)}  |  **Range:** {period}")
+                results = []
+                for tk in tickers:
+                    data = get_stock_data(tk, period)
+                    if not data:
+                        st.warning(f"{tk}: no data.")
+                        continue
+                    results.append(data)
+                    df = pd.DataFrame(data["history"])
+                    fig = px.line(df, x="Date", y="Close", title=f"{tk} ({period})")
+                    st.plotly_chart(fig, use_container_width=True)
+                    sig = decision_signal(df.rename(columns={"Close":"close"}))
+                    st.caption(f"Signal: {sig}")
 
-# ---------- TAB 3: Daily Report ----------
-with tab3:
-    st.subheader("Generate Personalized Daily Market Report")
-    if st.button("📄 Generate PDF Report"):
-        news = get_finance_news("markets")
-        mood = compute_market_mood(news)
-        outlooks = {t: "OK" for t in user_tickers}
-        fname = "daily_report.pdf"
-        generate_daily_report(fname, mood, outlooks, news)
-        with open(fname,"rb") as f:
-            st.download_button("Download Report", f, file_name=fname)
+                if results:
+                    avg = sum(r["pct"] for r in results) / len(results)
+                    stance = "Cautious" if avg < 0 else "Constructive"
+                    st.metric("Market Outlook", stance, f"{avg:.2f}% avg daily move")
+
+        elif intent["intent"] == "report":
+            tickers = intent["tickers"]
+            if not tickers:
+                st.info("Report needs tickers. Example: `report for AAPL, MSFT, NVDA`")
+            else:
+                st.markdown(f"**Generating PDF report for:** {', '.join(tickers)}")
+                news = get_finance_news("markets")
+                mood = compute_market_mood(news)
+                outlooks = {t: "OK" for t in tickers}
+                name = f"daily_report_{datetime.date.today()}.pdf"
+                generate_daily_report(name, mood, outlooks, news)
+                with open(name,"rb") as f:
+                    st.download_button("Download report", f, file_name=name)
+
+        else:
+            render_help()
