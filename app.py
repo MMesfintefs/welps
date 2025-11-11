@@ -51,7 +51,7 @@ def get_macro_snapshot():
         return {"Inflation": "N/A", "Unemployment": "N/A", "FedRate": "N/A"}
 
 # ---------- PAGE HEADER ----------
-st.markdown("<h1>🧠 Agentic AI Market Intelligence Assistant</h1>", unsafe_allow_html=True)
+st.markdown("<h1>🙂 Nova </h1>", unsafe_allow_html=True)
 st.caption("Data from Yahoo Finance, NewsAPI, and the U.S. Federal Reserve (FRED).")
 
 # Sidebar – portfolio & macro data
