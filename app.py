@@ -1,19 +1,20 @@
+import os, requests, datetime
 import streamlit as st
 import pandas as pd
 import plotly.express as px
 import yfinance as yf
-import os
+from dotenv import load_dotenv
 
-# Custom modules (you’ll create these next)
-from analysis import compute_market_mood, decision_signal
-from feeds import get_reddit_trending, next_macro_event
+# local modules (you’ll add these next)
+from analysis import compute_market_mood, decision_signal, get_finance_news
 from report import generate_daily_report
 
+load_dotenv()
 st.set_page_config(page_title="Agentic AI Market Assistant", page_icon="🧠", layout="wide")
 
-# ---------- BASIC FUNCTIONS ----------
+# ---------- UTILITIES ----------
 def get_stock_data(ticker: str, period: str = "1mo"):
-    """Fetch price history for any ticker."""
+    """Fetch price history for any U.S. ticker."""
     try:
         t = yf.Ticker(ticker)
         hist = t.history(period=period, interval="1d")
@@ -24,21 +25,43 @@ def get_stock_data(ticker: str, period: str = "1mo"):
         change = price - prev
         pct = (change / prev) * 100
         hist = hist.reset_index()[["Date", "Close"]]
-        return {"ticker": ticker.upper(), "price": round(price,2), "change": round(change,2),
-                "pct": round(pct,2), "history": hist}
-    except Exception as e:
+        return {"ticker": ticker.upper(), "price": round(price,2),
+                "change": round(change,2), "pct": round(pct,2), "history": hist}
+    except Exception:
         return None
 
-# ---------- PAGE LAYOUT ----------
-st.markdown("<h1>🧠 Agentic AI Market Intelligence Assistant</h1>", unsafe_allow_html=True)
-st.caption("A personalized, multi-source, sentiment-driven market analysis platform.")
+@st.cache_data(ttl=600)
+def get_macro_snapshot():
+    """Pull basic U.S. macro indicators from FRED."""
+    fred_api = os.getenv("FRED_API_KEY")
+    if not fred_api:
+        return {"Inflation": "3.4%", "Unemployment": "3.9%", "FedRate": "5.25%"}
+    try:
+        base = "https://api.stlouisfed.org/fred/series/observations"
+        def fred_series(series_id):
+            r = requests.get(base, params={"series_id": series_id,
+                                           "api_key": fred_api, "file_type":"json"})
+            data = r.json()["observations"][-1]["value"]
+            return float(data)
+        inflation = fred_series("CPIAUCSL")
+        unemp = fred_series("UNRATE")
+        fed = fred_series("FEDFUNDS")
+        return {"Inflation": f"{inflation:.1f}%", "Unemployment": f"{unemp:.1f}%", "FedRate": f"{fed:.2f}%"}
+    except Exception:
+        return {"Inflation": "N/A", "Unemployment": "N/A", "FedRate": "N/A"}
 
-# Sidebar – user portfolio + intel
-st.sidebar.header("📊 Market Intel")
+# ---------- PAGE HEADER ----------
+st.markdown("<h1>🧠 Agentic AI Market Intelligence Assistant</h1>", unsafe_allow_html=True)
+st.caption("Data from Yahoo Finance, NewsAPI, and the U.S. Federal Reserve (FRED).")
+
+# Sidebar – portfolio & macro data
+st.sidebar.header("📊 Macro Snapshot")
+macros = get_macro_snapshot()
+for k,v in macros.items():
+    st.sidebar.metric(k, v)
+
 portfolio_tickers = st.sidebar.text_input("My Portfolio", "AAPL, MSFT, NVDA, TSLA, AMZN")
 user_tickers = [t.strip().upper() for t in portfolio_tickers.split(",") if t.strip()]
-st.sidebar.write(f"Trending Reddit tickers: {', '.join(get_reddit_trending())}")
-st.sidebar.write(next_macro_event())
 
 # Tabs
 tab1, tab2, tab3 = st.tabs(["📈 Market Overview", "📥 Inbox Assistant (Demo)", "📄 Daily Report"])
@@ -46,35 +69,28 @@ tab1, tab2, tab3 = st.tabs(["📈 Market Overview", "📥 Inbox Assistant (Demo)
 # ---------- TAB 1: Market Overview ----------
 with tab1:
     st.subheader("Market Overview & Sentiment Analysis")
-    period = st.selectbox("Select time range", ["7d", "1mo", "3mo", "6mo", "1y", "ytd", "max"], index=2)
-    topic = st.text_input("Market focus", "tech, inflation, energy, yields")
+    period = st.selectbox("Select time range", ["7d","1mo","3mo","6mo","1y","ytd","max"], index=2)
+    topic = st.text_input("Market topic focus", "tech, inflation, energy, yields")
 
     if st.button("Run Market Analysis 🚀"):
-        stocks = []
-        for t in user_tickers:
-            data = get_stock_data(t, period)
-            if data:
-                stocks.append(data)
-
+        stocks = [s for s in (get_stock_data(t, period) for t in user_tickers) if s]
         if not stocks:
-            st.error("Could not fetch stock data. Try different tickers.")
+            st.error("No valid stock data found.")
         else:
-            avg = sum([s["pct"] for s in stocks]) / len(stocks)
+            avg = sum(s["pct"] for s in stocks) / len(stocks)
             sentiment = "Cautious" if avg < 0 else "Constructive"
             st.metric("Market Outlook", sentiment, f"{avg:.2f}% avg daily move")
 
-            # Charts
             for s in stocks:
                 df = pd.DataFrame(s["history"])
                 fig = px.line(df, x="Date", y="Close", title=f"{s['ticker']} ({period})")
                 st.plotly_chart(fig, use_container_width=True)
-                signal = decision_signal(df.rename(columns={"Close":"close"}))
-                st.caption(f"Signal: {signal}")
+                sig = decision_signal(df.rename(columns={"Close":"close"}))
+                st.caption(f"Signal: {sig}")
 
-            # News + mood
-            from analysis import get_finance_news
+            # credible news + mood
             news = get_finance_news(topic)
-            st.markdown("### 📰 Top Headlines")
+            st.markdown("### 📰 Top Headlines (Reuters, Bloomberg, WSJ, CNBC, MarketWatch)")
             for n in news:
                 st.write(f"• **{n['title']}** — {n['source']}")
             mood = compute_market_mood(news)
@@ -84,9 +100,18 @@ with tab1:
 with tab2:
     st.subheader("Inbox Intelligence Assistant (Demo Inbox)")
     demo_emails = [
-        {"from": "Sarah Chen <sarah@recruiter.com>", "subject": "Data Analyst Internship - Quick Intro Call", "body": "Are you free for a 15-minute call next week?", "category": "To Reply"},
-        {"from": "Investment Club <club@bentley.edu>", "subject": "Tonight: Semiconductor outlook discussion", "body": "Bring one slide on NVDA/TSMC outlook.", "category": "Finance"},
-        {"from": "Mom <mom@example.com>", "subject": "Proud of you!", "body": "Call me when you can. Love, Mom", "category": "Personal"},
+        {"from":"Sarah Chen <sarah@recruiter.com>",
+         "subject":"Data Analyst Internship – Quick Intro Call",
+         "body":"Are you free for a 15-minute call next week?",
+         "category":"To Reply"},
+        {"from":"Investment Club <club@bentley.edu>",
+         "subject":"Tonight: Semiconductor Outlook Discussion",
+         "body":"Bring one slide on NVDA/TSMC outlook.",
+         "category":"Finance"},
+        {"from":"Mom <mom@example.com>",
+         "subject":"Proud of you!",
+         "body":"Call me when you can. Love, Mom",
+         "category":"Personal"},
     ]
     if st.button("Analyze Inbox 🧠"):
         for email in demo_emails:
@@ -95,7 +120,7 @@ with tab2:
                 st.markdown(f"**{email['subject']}**")
                 st.caption(email["from"])
                 st.write(email["body"])
-                if email["category"] in ["To Reply", "Finance"]:
+                if email["category"] in ["To Reply","Finance"]:
                     st.code(
                         f"Hi, thanks for your message about '{email['subject']}'. I'll follow up soon.\n\nBest,\nMichael",
                         language="markdown"
@@ -105,11 +130,10 @@ with tab2:
 with tab3:
     st.subheader("Generate Personalized Daily Market Report")
     if st.button("📄 Generate PDF Report"):
-        from analysis import get_finance_news
         news = get_finance_news("markets")
         mood = compute_market_mood(news)
         outlooks = {t: "OK" for t in user_tickers}
-        filename = "daily_report.pdf"
-        generate_daily_report(filename, mood, outlooks, news)
-        with open(filename, "rb") as f:
-            st.download_button("Download Report", f, file_name="daily_report.pdf")
+        fname = "daily_report.pdf"
+        generate_daily_report(fname, mood, outlooks, news)
+        with open(fname,"rb") as f:
+            st.download_button("Download Report", f, file_name=fname)
