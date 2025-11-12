@@ -2,7 +2,8 @@ import os, re, json, requests, datetime
 import streamlit as st
 import pandas as pd
 import plotly.express as px
-import yfinance as yf
+import yfinance as yffrom datetime import datetime
+import pytz
 from openai import OpenAI
 
 # -------------------- PAGE SETUP --------------------
@@ -160,8 +161,9 @@ with col2:
     st.markdown(get_macro_snapshot())
 
 with col3:
-    now = datetime.datetime.now().strftime("%A, %B %d, %Y %I:%M %p")
-    st.markdown("### ⏱️ Time")
+    boston_time = datetime.now(pytz.timezone("America/New_York"))
+    now = boston_time.strftime("%A, %B %d, %Y %I:%M %p")
+    st.markdown("### 🕓 Time")
     st.markdown(f"**{now}**")
 
 st.divider()
