@@ -27,9 +27,9 @@ def get_weather(city="Boston", country="US"):
             return "⚠️ Missing WEATHER_API_KEY."
         url = f"http://api.weatherapi.com/v1/current.json?key={key}&q={city},{country}"
         res = requests.get(url, timeout=10).json()
-        temp = res["current"]["temp_c"]
+        temp = res["current"]["temp_f"]
         cond = res["current"]["condition"]["text"]
-        return f"🌦️ {city}: {temp}°C, {cond}"
+        return f"🌦️ {city}: {temp}°F, {cond}"
     except Exception as e:
         return f"Weather unavailable: {e}"
 
