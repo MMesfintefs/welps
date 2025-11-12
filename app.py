@@ -161,7 +161,7 @@ st.divider()
 #                   NOVA CHAT INTERFACE
 # =====================================================
 st.markdown(
-    "<h1 style='text-align:center;'>NOVA 😊</h1>",
+    "<h1 style='text-align:center;'>NoVa 😊</h1>",
     unsafe_allow_html=True,
 )
 st.markdown(
