@@ -165,7 +165,7 @@ st.markdown(
     unsafe_allow_html=True,
 )
 st.markdown(
-    "<p style='text-align:center;'>.</p>",
+    "<p style='text-align:center;'></p>",
     unsafe_allow_html=True,
 )
 
