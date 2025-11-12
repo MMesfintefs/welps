@@ -23,7 +23,9 @@ st.set_page_config(page_title="NOVA 😊", page_icon="😊", layout="wide")
 # -------------------- OpenAI brain --------------------
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-# -------------------- Weather Snapshot --------------------
+# =====================================================
+#                 WEATHER + MACRO SNAPSHOTS
+# =====================================================
 def get_weather():
     key = os.getenv("WEATHER_API_KEY")
     city = "Boston"
@@ -34,12 +36,11 @@ def get_weather():
             return "⚠️ Weather unavailable"
         temp_c = res["current"]["temp_c"]
         temp_f = (temp_c * 9 / 5) + 32
-        condition = res["current"]["condition"]["text"]
-        return f"{city}: {temp_f:.1f}°F, {condition}"
+        cond = res["current"]["condition"]["text"]
+        return f"{city}: {temp_f:.1f}°F, {cond}"
     except Exception:
         return "⚠️ Weather unavailable"
 
-# -------------------- Macro Snapshot --------------------
 def get_macro_snapshot():
     fred_key = os.getenv("FRED_API_KEY")
     if not fred_key:
@@ -50,11 +51,7 @@ def get_macro_snapshot():
         def fred_series(series_id):
             r = requests.get(
                 base,
-                params={
-                    "series_id": series_id,
-                    "api_key": fred_key,
-                    "file_type": "json",
-                },
+                params={"series_id": series_id, "api_key": fred_key, "file_type": "json"},
                 timeout=10,
             )
             r.raise_for_status()
@@ -67,15 +64,89 @@ def get_macro_snapshot():
     except Exception:
         return "Macro data unavailable"
 
-# -------------------- Layout: Top 3 Columns --------------------
+# =====================================================
+#                 STOCK DATA (Yahoo Finance)
+# =====================================================
+def get_stock_data(ticker: str, period: str = "1mo"):
+    try:
+        t = yf.Ticker(ticker)
+        hist = t.history(period=period, interval="1d")
+        if hist.empty:
+            return None
+        price = hist["Close"].iloc[-1]
+        prev = hist["Close"].iloc[-2] if len(hist) > 1 else price
+        pct = (price - prev) / prev * 100 if prev else 0
+        return {
+            "ticker": ticker.upper(),
+            "price": round(price, 2),
+            "pct": round(pct, 2),
+            "history": hist.reset_index()[["Date", "Close"]],
+        }
+    except Exception:
+        return None
+
+# =====================================================
+#                 NOVA'S BRAIN / ROUTER
+# =====================================================
+def nova_brain(prompt):
+    system_prompt = """You are NOVA 😊 — a smart, concise assistant who answers questions about weather, stocks, or macroeconomics.
+    You call external tools when relevant instead of guessing data."""
+    try:
+        # detect user intent
+        text = prompt.lower()
+
+        # --- Weather ---
+        if "weather" in text or "temperature" in text:
+            return f"🌦️ {get_weather()}"
+
+        # --- Stock info ---
+        tickers = re.findall(r"\b[A-Z]{1,5}\b", prompt.upper())
+        if "stock" in text or tickers:
+            if not tickers:
+                return "Please specify a ticker symbol (e.g., AAPL, TSLA, MSFT)."
+            out = []
+            for t in tickers:
+                data = get_stock_data(t)
+                if data:
+                    df = pd.DataFrame(data["history"])
+                    fig = px.line(df, x="Date", y="Close", title=f"{t} Price History")
+                    st.plotly_chart(fig, use_container_width=True)
+                    out.append(f"{t}: ${data['price']} ({data['pct']}%)")
+                else:
+                    out.append(f"No data found for {t}.")
+            return " | ".join(out)
+
+        # --- Macro snapshot ---
+        if "macro" in text or "economy" in text or "inflation" in text:
+            return get_macro_snapshot()
+
+        # --- Default: Chat with model ---
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": prompt},
+            ],
+        )
+        return response.choices[0].message.content
+
+    except Exception as e:
+        err = str(e)
+        if "insufficient_quota" in err or "rate_limit" in err:
+            return "⚠️ OpenAI quota limit reached or rate-limited. Please try again later."
+        return f"⚠️ Unexpected error: {err}"
+
+# =====================================================
+#                   PAGE LAYOUT
+# =====================================================
 col1, col2, col3 = st.columns(3)
 
 with col1:
-    st.markdown("### 🌦️ Weather Snapshot")
+    st.markdown("### 🌦️ ")
     st.metric("Current", get_weather())
 
 with col2:
-    st.markdown("### 📊 Macro Snapshot")
+    st.markdown("### 📊 ")
     st.metric("Status", "Fetching live data...")
     st.markdown(get_macro_snapshot())
 
@@ -87,11 +158,9 @@ with col3:
 
 st.divider()
 
-# =========================
-# CHAT INTERFACE SECTION
-# =========================
-
-# Header
+# =====================================================
+#                   NOVA CHAT INTERFACE
+# =====================================================
 st.markdown(
     "<h1 style='text-align:center;'>NOVA 😊</h1>",
     unsafe_allow_html=True,
@@ -101,41 +170,17 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-# Initialize chat memory
 if "history" not in st.session_state:
     st.session_state.history = []
 
-# Display previous messages
+# display history
 for msg in st.session_state.history:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
 
-# Input field
-user_text = st.chat_input(
-    "Ask NOVA anything (e.g. 'What's Tesla's stock and Boston's weather?')"
-)
+# input
+user_text = st.chat_input("Ask NOVA anything (e.g. 'What's Tesla's stock and Boston's weather?')")
 
-# AI response function
-def nova_brain(prompt):
-    system_prompt = """You are NOVA 😊 — a smart, friendly assistant built for live insights.
-    You answer about markets, weather, data, or macro info clearly and briefly."""
-    try:
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": prompt},
-            ],
-        )
-        return response.choices[0].message.content
-    except Exception as e:
-        err = str(e)
-        if "insufficient_quota" in err or "rate_limit" in err:
-            return "⚠️ OpenAI quota limit reached or rate-limited. Please try again later."
-        else:
-            return f"⚠️ Unexpected error: {err}"
-
-# Handle input
 if user_text:
     st.session_state.history.append({"role": "user", "content": user_text})
     with st.chat_message("user"):
