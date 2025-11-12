@@ -18,7 +18,7 @@ from analysis import compute_market_mood, decision_signal, get_finance_news
 from report import generate_daily_report
 
 # -------------------- page setup --------------------
-st.set_page_config(page_title="NOVA 😊", page_icon="😊", layout="wide")
+st.set_page_config(page_title="NoVa 😊", page_icon="😊", layout="wide")
 
 # -------------------- OpenAI brain --------------------
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
