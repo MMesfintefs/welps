@@ -1,186 +1,145 @@
 import os
 import streamlit as st
-import datetime
-from datetime import timedelta
-from google.oauth2.credentials import Credentials
-from google_auth_oauthlib.flow import InstalledAppFlow
+import google.oauth2.credentials
+from google_auth_oauthlib.flow import Flow
 from googleapiclient.discovery import build
 
-# -------------------------------------------------
-# SCOPES
-# -------------------------------------------------
-GMAIL_SCOPES = [
-    "https://www.googleapis.com/auth/gmail.modify",
-    "https://www.googleapis.com/auth/gmail.send"
-]
-CAL_SCOPES = [
-    "https://www.googleapis.com/auth/calendar"
-]
-
-def get_credentials():
+# -------------------------------------------------------------
+# OAuth Setup
+# -------------------------------------------------------------
+def load_client_config():
     """
-    OAuth login for Gmail + Calendar.
-    Works on Streamlit Cloud using local_server method.
-    Token is stored in session_state.
+    Builds a Google OAuth client config using Streamlit secrets.
+    This replaces the JSON file Google usually gives you.
     """
-    if "google_creds" in st.session_state:
-        return st.session_state.google_creds
-
-    # Read from Streamlit Secrets
-    client_id = st.secrets["gmail"]["client_id"]
-    client_secret = st.secrets["gmail"]["client_secret"]
-    redirect_uri = st.secrets["gmail"]["redirect_uri"]
-
-    flow = InstalledAppFlow.from_client_config(
-        {
-            "installed": {
-                "client_id": client_id,
-                "client_secret": client_secret,
-                "redirect_uris": [redirect_uri],
-                "auth_uri": "https://accounts.google.com/o/oauth2/auth",
-                "token_uri": "https://oauth2.googleapis.com/token"
-            }
-        },
-        scopes=GMAIL_SCOPES + CAL_SCOPES
-    )
-
-    creds = flow.run_local_server(port=0)
-    st.session_state.google_creds = creds
-    return creds
-
-# -------------------------------------------------
-# EMAIL FUNCTIONS
-# -------------------------------------------------
-
-def list_recent_emails(n=5):
-    creds = get_credentials()
-    service = build("gmail", "v1", credentials=creds)
-
-    results = service.users().messages().list(
-        userId="me", maxResults=n
-    ).execute()
-
-    messages = results.get("messages", [])
-    emails = []
-    for msg in messages:
-        msg_data = service.users().messages().get(
-            userId="me",
-            id=msg["id"],
-            format="metadata",
-            metadataHeaders=["From", "Subject", "Date"]
-        ).execute()
-        emails.append(msg_data)
-    return emails
-
-
-def search_emails(query):
-    creds = get_credentials()
-    service = build("gmail", "v1", credentials=creds)
-
-    results = service.users().messages().list(
-        userId="me", q=query
-    ).execute()
-
-    messages = results.get("messages", [])
-    emails = []
-
-    for msg in messages:
-        msg_data = service.users().messages().get(
-            userId="me",
-            id=msg["id"],
-            format="metadata",
-            metadataHeaders=["From", "Subject", "Date"]
-        ).execute()
-        emails.append(msg_data)
-    return emails
-
-
-def send_email(to, subject, body):
-    creds = get_credentials()
-    service = build("gmail", "v1", credentials=creds)
-
-    import base64
-    from email.mime.text import MIMEText
-
-    msg = MIMEText(body)
-    msg["to"] = to
-    msg["subject"] = subject
-
-    raw = base64.urlsafe_b64encode(msg.as_bytes()).decode()
-
-    return service.users().messages().send(
-        userId="me",
-        body={"raw": raw}
-    ).execute()
-
-
-def draft_email(to, subject, body):
-    creds = get_credentials()
-    service = build("gmail", "v1", credentials=creds)
-
-    import base64
-    from email.mime.text import MIMEText
-
-    msg = MIMEText(body)
-    msg["to"] = to
-    msg["subject"] = subject
-
-    raw = base64.urlsafe_b64encode(msg.as_bytes()).decode()
-
-    return service.users().drafts().create(
-        userId="me",
-        body={"message": {"raw": raw}}
-    ).execute()
-
-# -------------------------------------------------
-# CALENDAR FUNCTIONS
-# -------------------------------------------------
-
-def list_events(days=7):
-    creds = get_credentials()
-    service = build("calendar", "v3", credentials=creds)
-
-    now = datetime.datetime.utcnow().isoformat() + "Z"
-    later = (datetime.datetime.utcnow() + timedelta(days=days)).isoformat() + "Z"
-
-    events = service.events().list(
-        calendarId="primary",
-        timeMin=now,
-        timeMax=later,
-        singleEvents=True,
-        orderBy="startTime"
-    ).execute()
-
-    return events.get("items", [])
-
-
-def create_meeting(title, start_dt, duration=30):
-    creds = get_credentials()
-    service = build("calendar", "v3", credentials=creds)
-
-    end_dt = start_dt + timedelta(minutes=duration)
-
-    event = {
-        "summary": title,
-        "start": {"dateTime": start_dt.isoformat()},
-        "end": {"dateTime": end.isoformat()},
+    return {
+        "installed": {
+            "client_id": st.secrets["client_id"],
+            "client_secret": st.secrets["client_secret"],
+            "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+            "token_uri": "https://oauth2.googleapis.com/token",
+            "redirect_uris": [st.secrets["redirect_uri"]],
+        }
     }
 
-    return service.events().insert(
-        calendarId="primary",
-        body=event
-    ).execute()
+
+# -------------------------------------------------------------
+# AUTHENTICATION HANDLER
+# -------------------------------------------------------------
+def ensure_google_login():
+    """
+    Handles login flow:
+    1. If not logged in, redirect user to Google login
+    2. After login, store Google OAuth tokens in session
+    """
+
+    if "google_tokens" not in st.session_state:
+        st.session_state.google_tokens = None
+
+    # Already authenticated
+    if st.session_state.google_tokens:
+        return st.session_state.google_tokens
+
+    # Prompt login button
+    st.warning("To enable Gmail and Calendar features, please log in with Google.")
+    if st.button("Sign in with Google"):
+        client_config = load_client_config()
+
+        flow = Flow.from_client_config(
+            client_config,
+            scopes=[
+                "https://www.googleapis.com/auth/gmail.readonly",
+                "https://www.googleapis.com/auth/calendar.readonly",
+            ],
+        )
+
+        flow.redirect_uri = st.secrets["redirect_uri"]
+        auth_url, state = flow.authorization_url(prompt="consent")
+
+        st.session_state.oauth_state = state
+        st.markdown(f"[Click here to authorize Google]({auth_url})")
+
+    return None
 
 
-def find_next_free_slot(duration=30):
-    events = list_events(days=2)  # look at next 48 hours
-    now = datetime.datetime.utcnow()
-    pointer = now
+# -------------------------------------------------------------
+# GMAIL Functions
+# -------------------------------------------------------------
+def gmail_service():
+    tokens = st.session_state.get("google_tokens")
+    if not tokens:
+        return None
 
-    for event in events:
-        start = datetime.datetime.fromisoformat(event["start"]["dateTime"])
-        if (start - pointer).total_seconds() >= duration * 60:
-            return pointer
-        pointer = datetime.datetime.fromisoformat(event["end"]["dateTime"])
+    creds = google.oauth2.credentials.Credentials(**tokens)
+    return build("gmail", "v1", credentials=creds)
 
-    return pointer
+
+def read_latest_emails(n=5):
+    """Returns the latest N emails from Gmail."""
+    service = gmail_service()
+    if not service:
+        return "Google not authenticated."
+
+    results = (
+        service.users()
+        .messages()
+        .list(userId="me", maxResults=n, q="newer_than:7d")
+        .execute()
+    )
+
+    messages = results.get("messages", [])
+    emails = []
+
+    for msg in messages:
+        data = (
+            service.users()
+            .messages()
+            .get(userId="me", id=msg["id"], format="metadata")
+            .execute()
+        )
+        headers = data.get("payload", {}).get("headers", [])
+        subject = next((h["value"] for h in headers if h["name"] == "Subject"), "(No Subject)")
+        sender = next((h["value"] for h in headers if h["name"] == "From"), "(Unknown Sender)")
+        emails.append(f"📩 **{subject}** — *{sender}*")
+
+    return emails if emails else "No recent emails."
+
+
+# -------------------------------------------------------------
+# Calendar Functions
+# -------------------------------------------------------------
+def calendar_service():
+    tokens = st.session_state.get("google_tokens")
+    if not tokens:
+        return None
+
+    creds = google.oauth2.credentials.Credentials(**tokens)
+    return build("calendar", "v3", credentials=creds)
+
+
+def get_upcoming_events(n=5):
+    """Returns upcoming Google Calendar events."""
+    service = calendar_service()
+    if not service:
+        return "Google not authenticated."
+
+    events_result = (
+        service.events()
+        .list(
+            calendarId="primary",
+            maxResults=n,
+            singleEvents=True,
+            orderBy="startTime",
+        )
+        .execute()
+    )
+
+    events = events_result.get("items", [])
+    formatted = []
+
+    for ev in events:
+        start = ev["start"].get("dateTime", ev["start"].get("date"))
+        summary = ev.get("summary", "(No Title)")
+        formatted.append(f"📆 **{summary}** — {start}")
+
+    return formatted if formatted else "No upcoming events found."
