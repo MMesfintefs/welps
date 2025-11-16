@@ -9,18 +9,24 @@ from googleapiclient.discovery import build
 # -------------------------------------------------
 # SCOPES
 # -------------------------------------------------
-GMAIL_SCOPES = ["https://www.googleapis.com/auth/gmail.modify",
-                "https://www.googleapis.com/auth/gmail.send"]
-CAL_SCOPES = ["https://www.googleapis.com/auth/calendar"]
+GMAIL_SCOPES = [
+    "https://www.googleapis.com/auth/gmail.modify",
+    "https://www.googleapis.com/auth/gmail.send"
+]
+CAL_SCOPES = [
+    "https://www.googleapis.com/auth/calendar"
+]
 
 def get_credentials():
     """
-    Handles OAuth login for Gmail + Calendar using Streamlit Cloud.
-    Token is stored in session_state automatically.
+    OAuth login for Gmail + Calendar.
+    Works on Streamlit Cloud using local_server method.
+    Token is stored in session_state.
     """
     if "google_creds" in st.session_state:
         return st.session_state.google_creds
 
+    # Read from Streamlit Secrets
     client_id = st.secrets["gmail"]["client_id"]
     client_secret = st.secrets["gmail"]["client_secret"]
     redirect_uri = st.secrets["gmail"]["redirect_uri"]
@@ -39,14 +45,13 @@ def get_credentials():
     )
 
     creds = flow.run_local_server(port=0)
-
     st.session_state.google_creds = creds
     return creds
-
 
 # -------------------------------------------------
 # EMAIL FUNCTIONS
 # -------------------------------------------------
+
 def list_recent_emails(n=5):
     creds = get_credentials()
     service = build("gmail", "v1", credentials=creds)
@@ -57,13 +62,14 @@ def list_recent_emails(n=5):
 
     messages = results.get("messages", [])
     emails = []
-
     for msg in messages:
         msg_data = service.users().messages().get(
-            userId="me", id=msg["id"], format="metadata", metadataHeaders=["From", "Subject", "Date"]
+            userId="me",
+            id=msg["id"],
+            format="metadata",
+            metadataHeaders=["From", "Subject", "Date"]
         ).execute()
         emails.append(msg_data)
-
     return emails
 
 
@@ -76,15 +82,16 @@ def search_emails(query):
     ).execute()
 
     messages = results.get("messages", [])
-    if not messages:
-        return []
-
     emails = []
+
     for msg in messages:
-        data = service.users().messages().get(
-            userId="me", id=msg["id"], format="metadata", metadataHeaders=["From", "Subject", "Date"]
+        msg_data = service.users().messages().get(
+            userId="me",
+            id=msg["id"],
+            format="metadata",
+            metadataHeaders=["From", "Subject", "Date"]
         ).execute()
-        emails.append(data)
+        emails.append(msg_data)
     return emails
 
 
@@ -102,7 +109,8 @@ def send_email(to, subject, body):
     raw = base64.urlsafe_b64encode(msg.as_bytes()).decode()
 
     return service.users().messages().send(
-        userId="me", body={"raw": raw}
+        userId="me",
+        body={"raw": raw}
     ).execute()
 
 
@@ -120,13 +128,14 @@ def draft_email(to, subject, body):
     raw = base64.urlsafe_b64encode(msg.as_bytes()).decode()
 
     return service.users().drafts().create(
-        userId="me", body={"message": {"raw": raw}}
+        userId="me",
+        body={"message": {"raw": raw}}
     ).execute()
-
 
 # -------------------------------------------------
 # CALENDAR FUNCTIONS
 # -------------------------------------------------
+
 def list_events(days=7):
     creds = get_credentials()
     service = build("calendar", "v3", credentials=creds)
@@ -135,39 +144,37 @@ def list_events(days=7):
     later = (datetime.datetime.utcnow() + timedelta(days=days)).isoformat() + "Z"
 
     events = service.events().list(
-        calendarId="primary", timeMin=now, timeMax=later,
-        singleEvents=True, orderBy="startTime"
+        calendarId="primary",
+        timeMin=now,
+        timeMax=later,
+        singleEvents=True,
+        orderBy="startTime"
     ).execute()
 
     return events.get("items", [])
 
 
-def create_meeting(title, start_dt, duration_minutes=30):
+def create_meeting(title, start_dt, duration=30):
     creds = get_credentials()
     service = build("calendar", "v3", credentials=creds)
 
-    end_dt = start_dt + timedelta(minutes=duration_minutes)
+    end_dt = start_dt + timedelta(minutes=duration)
 
     event = {
         "summary": title,
         "start": {"dateTime": start_dt.isoformat()},
-        "end": {"dateTime": end_dt.isoformat()},
+        "end": {"dateTime": end.isoformat()},
     }
 
     return service.events().insert(
-        calendarId="primary", body=event
+        calendarId="primary",
+        body=event
     ).execute()
 
 
 def find_next_free_slot(duration=30):
-    creds = get_credentials()
-    service = build("calendar", "v3", credentials=creds)
-
+    events = list_events(days=2)  # look at next 48 hours
     now = datetime.datetime.utcnow()
-    end = now + timedelta(days=2)
-
-    events = list_events(days=2)
-
     pointer = now
 
     for event in events:
