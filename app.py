@@ -1,10 +1,9 @@
 # =========================
-# FILE: app.py (FINAL NOVA)
+# FILE: app.py (NOVA CLEAN BASE)
 # =========================
 
 import os
 import re
-import json
 import requests
 import datetime
 from datetime import datetime as dt
@@ -15,68 +14,48 @@ import plotly.express as px
 import yfinance as yf
 from openai import OpenAI
 
-# ------------- Internal Modules -------------
-from analysis import compute_market_mood, decision_signal, get_finance_news
-from report import generate_daily_report
-from gmail_calendar import (
-    list_recent_emails,
-    search_emails,
-    send_email,
-    draft_email,
-    list_events,
-    create_meeting,
-    find_next_free_slot
-)
+# ---------------- Streamlit Setup ----------------
+st.set_page_config(page_title="NOVA 😊", page_icon="😊", layout="wide")
 
-# Page config
-st.set_page_config(
-    page_title="NOVA 😊",
-    page_icon="😊",
-    layout="wide"
-)
-
-# ---------------- OPENAI SETUP ----------------
+# ---------------- OpenAI Client ----------------
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-def nova_brain(prompt, system="You are NOVA, a friendly market assistant. Be concise, smart, and helpful."):
-    """
-    NOVA's actual thinking brain using the Responses API.
-    """
+def nova_brain(prompt):
     try:
         response = client.responses.create(
             model="gpt-4.1-mini",
             input=prompt,
-            system=system
+            system="You are NOVA, a smart, friendly market and productivity assistant."
         )
         return response.output[0].content[0].text
     except Exception as e:
         return f"NOVA had a brain freeze: {e}"
 
 
-# ---------------- WEATHER ----------------
+# ---------------- Weather ----------------
 def get_weather():
-    key = st.secrets["weather"]["api_key"]
-    city = "Boston"
     try:
+        key = st.secrets["weather"]["api_key"]
+        city = "Boston"
         url = f"http://api.weatherapi.com/v1/current.json?key={key}&q={city}&aqi=no"
         res = requests.get(url).json()
+
         temp_c = res["current"]["temp_c"]
         temp_f = (temp_c * 9/5) + 32
         condition = res["current"]["condition"]["text"]
+
         return f"{temp_f:.1f}°F • {condition}"
     except:
         return "Unavailable"
 
 
-# ---------------- MACRO DATA ----------------
+# ---------------- Macro Snapshot ----------------
 def get_macro_snapshot():
-    try:
-        return "Inflation: 3.1% | Unemployment: 3.8% | Fed Funds: 5.33%"
-    except:
-        return "Unavailable"
+    # Placeholder (avoid API calls for now)
+    return "Inflation 3.1% | Unemployment 3.8% | Fed Funds 5.33%"
 
 
-# ---------------- STOCK LOOKUP ----------------
+# ---------------- Stock Lookup ----------------
 def get_stock_data(ticker):
     try:
         t = yf.Ticker(ticker)
@@ -88,7 +67,19 @@ def get_stock_data(ticker):
         return None
 
 
-# ---------------- HEADER UI ----------------
+def basic_signal(df):
+    # Extremely simple “signal”
+    last = df["Close"].iloc[-1]
+    prev = df["Close"].iloc[-5] if len(df) >= 5 else df["Close"].iloc[0]
+
+    if last > prev:
+        return "Bullish 📈"
+    elif last < prev:
+        return "Bearish 📉"
+    return "Sideways ➖"
+
+
+# ---------------- Header UI ----------------
 col1, col2, col3 = st.columns(3)
 
 with col1:
@@ -107,111 +98,61 @@ with col3:
 st.divider()
 
 
-# ---------------- CHAT HISTORY ----------------
+# ---------------- Chat History ----------------
 if "history" not in st.session_state:
     st.session_state.history = []
 
-
-# Display previous messages
 for msg in st.session_state.history:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
 
 
-# ---------------- USER INPUT ----------------
+# ---------------- User Input ----------------
 user_input = st.chat_input("Ask NOVA anything…")
 
 if user_input:
-    # Display user message
+    # Store + display user message
     st.session_state.history.append({"role": "user", "content": user_input})
     with st.chat_message("user"):
         st.write(user_input)
 
     text = user_input.lower()
 
-    # ---------------- STOCKS ----------------
-    if any(k in text for k in ["stock", "price", "chart", "analyze"]):
+    # --------------------------------------
+    # STOCK LOOKUP
+    # --------------------------------------
+    if any(k in text for k in ["stock", "price", "chart", "buy", "sell", "tsla", "aapl", "msft"]):
+
+        # Find ticker symbols (simple regex)
         tickers = re.findall(r"\b[A-Z]{1,5}\b", user_input.upper())
 
         if not tickers:
-            reply = "Tell me which ticker. Example: AAPL or MSFT."
-        else:
-            reply = f"Analyzing: {', '.join(tickers)}"
+            reply = "Tell me the ticker you want: for example AAPL or TSLA."
             with st.chat_message("assistant"):
                 st.write(reply)
+            st.session_state.history.append({"role": "assistant", "content": reply})
 
-                for tk in tickers:
-                    data = get_stock_data(tk)
-                    if data is None:
-                        st.warning(f"No data for {tk}.")
-                        continue
-                    
-                    df = data.reset_index()
-                    fig = px.line(df, x="Date", y="Close", title=f"{tk} (1 month)")
-                    st.plotly_chart(fig, use_container_width=True)
+        else:
+            for tk in tickers:
+                data = get_stock_data(tk)
+                if data is None:
+                    with st.chat_message("assistant"):
+                        st.warning(f"No stock data found for {tk}.")
+                    continue
 
-                    sig = decision_signal(df.rename(columns={"Close": "close"}))
-                    st.markdown(f"**Signal for {tk}: {sig}**")
+                df = data.reset_index()
+                fig = px.line(df, x="Date", y="Close", title=f"{tk} (1-month)")
+                st.plotly_chart(fig, use_container_width=True)
 
-        st.session_state.history.append({"role": "assistant", "content": reply})
+                sig = basic_signal(df)
+                with st.chat_message("assistant"):
+                    st.write(f"**Signal for {tk}: {sig}**")
 
-    # ---------------- EMAILS ----------------
-    elif "email" in text or "inbox" in text:
-        emails = list_recent_emails(5)
-        reply = f"Fetched {len(emails)} recent emails."
-        with st.chat_message("assistant"):
-            st.write(reply)
-            st.json(emails)
-        st.session_state.history.append({"role": "assistant", "content": reply})
+            st.session_state.history.append({"role": "assistant", "content": "Stock analysis completed."})
 
-    elif "search email" in text:
-        query = user_input.split("search email", 1)[1].strip()
-        emails = search_emails(query)
-        reply = f"Found {len(emails)} emails matching: '{query}'."
-        with st.chat_message("assistant"):
-            st.write(reply)
-            st.json(emails)
-        st.session_state.history.append({"role": "assistant", "content": reply})
-
-    elif "draft email" in text:
-        parts = user_input.split("|")
-        to = parts[1].strip()
-        subject = parts[2].strip()
-        body = parts[3].strip()
-        draft_email(to, subject, body)
-        reply = f"Draft created for {to}."
-        with st.chat_message("assistant"):
-            st.write(reply)
-        st.session_state.history.append({"role": "assistant", "content": reply})
-
-    elif "send email" in text:
-        parts = user_input.split("|")
-        to = parts[1].strip()
-        subject = parts[2].strip()
-        body = parts[3].strip()
-        send_email(to, subject, body)
-        reply = f"Email sent to {to}."
-        with st.chat_message("assistant"):
-            st.write(reply)
-        st.session_state.history.append({"role": "assistant", "content": reply})
-
-    # ---------------- CALENDAR ----------------
-    elif "calendar" in text or "schedule" in text:
-        events = list_events(5)
-        reply = f"You have {len(events)} upcoming events."
-        with st.chat_message("assistant"):
-            st.write(reply)
-            st.json(events)
-        st.session_state.history.append({"role": "assistant", "content": reply})
-
-    elif "free time" in text or "availability" in text:
-        slot = find_next_free_slot()
-        reply = f"Your next free 30-minute slot starts at: **{slot}**"
-        with st.chat_message("assistant"):
-            st.write(reply)
-        st.session_state.history.append({"role": "assistant", "content": reply})
-
-    # ---------------- GENERAL CHAT ----------------
+    # --------------------------------------
+    # DEFAULT NOVA RESPONSE
+    # --------------------------------------
     else:
         reply = nova_brain(user_input)
         with st.chat_message("assistant"):
