@@ -1,5 +1,6 @@
 # =========================
 # FILE: app.py
+# A stable, minimal version of NOVA
 # =========================
 
 import os
@@ -8,19 +9,36 @@ import datetime
 import pytz
 import streamlit as st
 import yfinance as yf
-from openai import OpenAI
 
 # =========================
-# Load API keys from Streamlit Secrets
+# Load Streamlit Secrets
 # =========================
 OPENAI_KEY = st.secrets.get("OPENAI_API_KEY", "")
 WEATHER_KEY = st.secrets.get("WEATHER_API_KEY", "")
 FRED_KEY = st.secrets.get("FRED_API_KEY", "")
 
 # =========================
-# OpenAI Client (v1.0+)
+# OpenAI REST Call (NO SDK)
 # =========================
-client = OpenAI(api_key=OPENAI_KEY)
+def ask_nova(prompt):
+    try:
+        url = "https://api.openai.com/v1/chat/completions"
+        headers = {
+            "Authorization": f"Bearer {OPENAI_KEY}",
+            "Content-Type": "application/json"
+        }
+        data = {
+            "model": "gpt-4o-mini",
+            "messages": [
+                {"role": "system", "content": "You are NOVA, an intelligent assistant."},
+                {"role": "user", "content": prompt}
+            ]
+        }
+        r = requests.post(url, json=data, headers=headers, timeout=20)
+        r.raise_for_status()
+        return r.json()["choices"][0]["message"]["content"]
+    except Exception as e:
+        return f"Error contacting NOVA: {e}"
 
 # =========================
 # Weather
@@ -28,145 +46,113 @@ client = OpenAI(api_key=OPENAI_KEY)
 def get_weather():
     try:
         url = f"http://api.weatherapi.com/v1/current.json?key={WEATHER_KEY}&q=Boston&aqi=no"
-        data = requests.get(url, timeout=8).json()
-        if "error" in data:
-            return "Weather unavailable"
+        r = requests.get(url, timeout=10).json()
 
-        temp_c = data["current"]["temp_c"]
+        if "current" not in r:
+            return "Unavailable"
+
+        temp_c = r["current"]["temp_c"]
+        cond = r["current"]["condition"]["text"]
         temp_f = temp_c * 9/5 + 32
-        cond = data["current"]["condition"]["text"]
 
-        return f"Boston: {temp_f:.1f}°F, {cond}"
+        return f"{temp_f:.1f}°F, {cond}"
     except:
-        return "Weather unavailable"
+        return "Unavailable"
 
 # =========================
-# Macro Snapshot from FRED
+# FRED Macro Data
 # =========================
-def fred_series(series_id):
+def fred(series):
     try:
-        base = "https://api.stlouisfed.org/fred/series/observations"
-        r = requests.get(base, params={
-            "series_id": series_id,
+        url = "https://api.stlouisfed.org/fred/series/observations"
+        r = requests.get(url, params={
+            "series_id": series,
             "api_key": FRED_KEY,
             "file_type": "json"
         })
-        r.raise_for_status()
-        return float(r.json()["observations"][-1]["value"])
+        val = float(r.json()["observations"][-1]["value"])
+        return val
     except:
         return None
 
-def get_macro_snapshot():
+def macro_snapshot():
     try:
-        infl = fred_series("CPIAUCSL")
-        unemp = fred_series("UNRATE")
-        fed = fred_series("FEDFUNDS")
-
-        return f"📊 Inflation: {infl:.1f} | Unemployment: {unemp:.1f}% | Fed Rate: {fed:.2f}%"
+        infl = fred("CPIAUCSL")
+        unemp = fred("UNRATE")
+        fed = fred("FEDFUNDS")
+        return f"Inflation: {infl:.1f} | Unemployment: {unemp:.1f}% | Fed Rate: {fed:.2f}%"
     except:
-        return "Macro data unavailable"
+        return "Unavailable"
 
 # =========================
-# Stock Lookup
+# Stocks
 # =========================
-def get_stock(ticker):
+def get_stock(tic):
     try:
-        stock = yf.Ticker(ticker)
-        info = stock.info
-
-        price = info.get("regularMarketPrice")
-        change = info.get("regularMarketChangePercent")
-
+        s = yf.Ticker(tic)
+        price = s.info.get("regularMarketPrice")
+        change = s.info.get("regularMarketChangePercent")
         if price is None:
             return None
-
-        return {
-            "price": price,
-            "change": change,
-            "name": info.get("shortName", ticker.upper()),
-        }
+        return f"{tic.upper()}: ${price} ({change}%)"
     except:
         return None
 
 # =========================
-# Chat with OpenAI
+# Streamlit UI
 # =========================
-def ask_nova(prompt):
-    try:
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[
-                {"role": "system", "content": "You are NOVA, a helpful assistant."},
-                {"role": "user", "content": prompt}
-            ]
-        )
-        return response.choices[0].message.content
-    except Exception as e:
-        return f"Error: {e}"
+st.set_page_config(page_title="NOVA", page_icon="✨", layout="wide")
 
-# =========================
-# STREAMLIT UI
-# =========================
-st.set_page_config(page_title="NOVA 😊", page_icon="😊", layout="wide")
+st.title("NOVA ✨")
+st.write("Your lightweight agentic assistant (stable mode).")
 
-st.markdown(
-    "<h1 style='text-align: center;'>NOVA 😊</h1>"
-    "<p style='text-align: center;'>Your self-directing agentic assistant — ready to act and analyze.</p>",
-    unsafe_allow_html=True
-)
-
-# ===== Top Section (Weather | Macro | Time) =====
+# Top Info
 col1, col2, col3 = st.columns(3)
 
 with col1:
-    st.markdown("### 🌦️ Weather")
-    st.metric("Current", get_weather())
+    st.subheader("🌤 Weather")
+    st.write(get_weather())
 
 with col2:
-    st.markdown("### 📊 Macro Snapshot")
-    st.metric("Status", "Live Data")
-    st.markdown(get_macro_snapshot())
+    st.subheader("📊 Macro Snapshot")
+    st.write(macro_snapshot())
 
 with col3:
-    st.markdown("### 🕓 Time")
+    st.subheader("⏰ Time")
     now = datetime.datetime.now(pytz.timezone("America/New_York"))
-    st.markdown(f"**{now.strftime('%A, %B %d, %Y %I:%M %p')}**")
+    st.write(now.strftime("%A, %B %d — %I:%M %p"))
 
 st.divider()
 
-# ===== Chat History =====
+# Chat history
 if "history" not in st.session_state:
     st.session_state.history = []
 
 for msg in st.session_state.history:
     with st.chat_message(msg["role"]):
-        st.markdown(msg["content"])
+        st.write(msg["content"])
 
-# ===== User Input =====
-user_text = st.chat_input("Ask NOVA anything (e.g. 'Show AAPL stock and Boston weather')")
+# Chat input
+q = st.chat_input("Ask Nova anything...")
 
-if user_text:
-    st.session_state.history.append({"role": "user", "content": user_text})
+if q:
+    st.session_state.history.append({"role": "user", "content": q})
     with st.chat_message("user"):
-        st.markdown(user_text)
+        st.write(q)
 
-    # If user asks for stock
-    words = user_text.upper().split()
-    tickers = [w for w in words if len(w) <= 5 and w.isalpha()]
+    # detect stock tickers
+    words = q.upper().split()
+    tickers = [w for w in words if w.isalpha() and len(w) <= 5]
 
     if tickers:
-        results = []
+        reply_lines = []
         for t in tickers:
             data = get_stock(t)
-            if data:
-                results.append(f"**{t}** → ${data['price']} ({data['change']}%)")
-            else:
-                results.append(f"No data found for {t}.")
-        nova_reply = "\n".join(results)
+            reply_lines.append(data if data else f"No data for {t}")
+        reply = "\n".join(reply_lines)
     else:
-        nova_reply = ask_nova(user_text)
+        reply = ask_nova(q)
 
-    st.session_state.history.append({"role": "assistant", "content": nova_reply})
-
+    st.session_state.history.append({"role": "assistant", "content": reply})
     with st.chat_message("assistant"):
-        st.markdown(nova_reply)
+        st.write(reply)
