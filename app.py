@@ -1,160 +1,165 @@
 # =========================
-# FILE: app.py (NOVA CLEAN BASE)
+# FILE: app.py
 # =========================
 
 import os
-import re
-import requests
 import datetime
-from datetime import datetime as dt
 import pytz
+import requests
 import streamlit as st
-import pandas as pd
-import plotly.express as px
 import yfinance as yf
 from openai import OpenAI
 
-# ---------------- Streamlit Setup ----------------
-st.set_page_config(page_title="NOVA 😊", page_icon="😊", layout="wide")
+# =============== LOAD SECRETS ===============
+OPENAI_KEY = st.secrets["OPENAI_API_KEY"]
+WEATHER_KEY = st.secrets["WEATHER_API_KEY"]
+FRED_KEY = st.secrets["FRED_API_KEY"]
 
-# ---------------- OpenAI Client ----------------
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+GOOGLE_CLIENT_ID = st.secrets["client_id"]
+GOOGLE_CLIENT_SECRET = st.secrets["client_secret"]
+GOOGLE_REDIRECT_URI = st.secrets["redirect_uri"]
 
-def nova_brain(prompt):
-    try:
-        response = client.responses.create(
-            model="gpt-4.1-mini",
-            input=prompt,
-            system="You are NOVA, a smart, friendly market and productivity assistant."
-        )
-        return response.output[0].content[0].text
-    except Exception as e:
-        return f"NOVA had a brain freeze: {e}"
+# OpenAI client
+client = OpenAI(api_key=OPENAI_KEY)
 
 
-# ---------------- Weather ----------------
+# =============== WEATHER ===============
 def get_weather():
     try:
-        key = st.secrets["weather"]["api_key"]
-        city = "Boston"
-        url = f"http://api.weatherapi.com/v1/current.json?key={key}&q={city}&aqi=no"
-        res = requests.get(url).json()
+        url = f"http://api.weatherapi.com/v1/current.json?key={WEATHER_KEY}&q=Boston&aqi=no"
+        res = requests.get(url, timeout=10).json()
+        if "error" in res:
+            return "Weather unavailable"
 
         temp_c = res["current"]["temp_c"]
-        temp_f = (temp_c * 9/5) + 32
-        condition = res["current"]["condition"]["text"]
+        temp_f = (temp_c * 9 / 5) + 32
+        cond = res["current"]["condition"]["text"]
 
-        return f"{temp_f:.1f}°F • {condition}"
+        return f"Boston: {temp_f:.1f}°F, {cond}"
     except:
-        return "Unavailable"
+        return "Weather unavailable"
 
 
-# ---------------- Macro Snapshot ----------------
-def get_macro_snapshot():
-    # Placeholder (avoid API calls for now)
-    return "Inflation 3.1% | Unemployment 3.8% | Fed Funds 5.33%"
-
-
-# ---------------- Stock Lookup ----------------
-def get_stock_data(ticker):
+# =============== MACRO (FRED) ===============
+def get_macro():
     try:
-        t = yf.Ticker(ticker)
-        hist = t.history(period="1mo")
+        base = "https://api.stlouisfed.org/fred/series/observations"
+
+        def fred_val(series):
+            r = requests.get(
+                base,
+                params={
+                    "series_id": series,
+                    "api_key": FRED_KEY,
+                    "file_type": "json"
+                },
+                timeout=10
+            )
+            r.raise_for_status()
+            data = r.json()["observations"]
+            return float(data[-1]["value"])
+
+        inflation = fred_val("CPIAUCSL")
+        unemp = fred_val("UNRATE")
+        fed_rate = fred_val("FEDFUNDS")
+
+        return f"📊 Inflation: {inflation:.1f} | Unemployment: {unemp:.1f}% | Fed Rate: {fed_rate:.2f}%"
+
+    except Exception:
+        return "Macro data unavailable"
+
+
+# =============== STOCK LOOKUP ===============
+def get_stock(ticker):
+    try:
+        stock = yf.Ticker(ticker)
+        hist = stock.history(period="1mo")
+        info = stock.info
+
         if hist.empty:
-            return None
-        return hist
+            return None, None
+
+        return info, hist
     except:
-        return None
+        return None, None
 
 
-def basic_signal(df):
-    # Extremely simple “signal”
-    last = df["Close"].iloc[-1]
-    prev = df["Close"].iloc[-5] if len(df) >= 5 else df["Close"].iloc[0]
+# =============== UI HEADER ===============
+st.set_page_config(page_title="NOVA 😊", layout="wide")
 
-    if last > prev:
-        return "Bullish 📈"
-    elif last < prev:
-        return "Bearish 📉"
-    return "Sideways ➖"
+st.markdown("<h1 style='text-align:center;'>NOVA 😊</h1>", unsafe_allow_html=True)
+st.markdown(
+    "<p style='text-align:center;'>Your self-directing agentic assistant — streamlined and focused.</p>",
+    unsafe_allow_html=True,
+)
 
-
-# ---------------- Header UI ----------------
 col1, col2, col3 = st.columns(3)
 
 with col1:
     st.markdown("### 🌦 Weather")
-    st.metric("Boston", get_weather())
+    st.write(get_weather())
 
 with col2:
     st.markdown("### 📊 Macro Snapshot")
-    st.write(get_macro_snapshot())
+    st.write(get_macro())
 
 with col3:
-    now = dt.now(pytz.timezone("America/New_York"))
-    st.markdown("### 🕓 Time (Boston)")
-    st.write(now.strftime("%A, %B %d, %Y %I:%M %p"))
+    boston_time = datetime.datetime.now(pytz.timezone("America/New_York"))
+    now = boston_time.strftime("%A, %B %d, %Y %I:%M %p")
+    st.markdown("### 🕓 Time")
+    st.write(now)
 
 st.divider()
 
-
-# ---------------- Chat History ----------------
+# =============== CHAT HISTORY ===============
 if "history" not in st.session_state:
     st.session_state.history = []
 
+
+# =============== DISPLAY CHAT HISTORY ===============
 for msg in st.session_state.history:
     with st.chat_message(msg["role"]):
-        st.markdown(msg["content"])
+        st.write(msg["content"])
 
 
-# ---------------- User Input ----------------
-user_input = st.chat_input("Ask NOVA anything…")
+# =============== USER INPUT ===============
+user_input = st.chat_input("Ask NOVA anything (stocks, email, calendar…)")
 
 if user_input:
-    # Store + display user message
+    # Show user message
     st.session_state.history.append({"role": "user", "content": user_input})
     with st.chat_message("user"):
         st.write(user_input)
 
-    text = user_input.lower()
+    # Check for stock queries
+    words = user_input.strip().upper().split()
 
-    # --------------------------------------
-    # STOCK LOOKUP
-    # --------------------------------------
-    if any(k in text for k in ["stock", "price", "chart", "buy", "sell", "tsla", "aapl", "msft"]):
+    # naive stock detection
+    if len(words) == 1 and words[0].isalpha() and len(words[0]) <= 5:
+        ticker = words[0]
+        info, hist = get_stock(ticker)
 
-        # Find ticker symbols (simple regex)
-        tickers = re.findall(r"\b[A-Z]{1,5}\b", user_input.upper())
-
-        if not tickers:
-            reply = "Tell me the ticker you want: for example AAPL or TSLA."
-            with st.chat_message("assistant"):
-                st.write(reply)
-            st.session_state.history.append({"role": "assistant", "content": reply})
-
+        if info is None:
+            bot_reply = f"No data found for {ticker}."
         else:
-            for tk in tickers:
-                data = get_stock_data(tk)
-                if data is None:
-                    with st.chat_message("assistant"):
-                        st.warning(f"No stock data found for {tk}.")
-                    continue
+            price = info.get("regularMarketPrice", "N/A")
+            bot_reply = f"**{ticker} Stock**\nPrice: {price}"
 
-                df = data.reset_index()
-                fig = px.line(df, x="Date", y="Close", title=f"{tk} (1-month)")
-                st.plotly_chart(fig, use_container_width=True)
+            st.line_chart(hist["Close"])
 
-                sig = basic_signal(df)
-                with st.chat_message("assistant"):
-                    st.write(f"**Signal for {tk}: {sig}**")
-
-            st.session_state.history.append({"role": "assistant", "content": "Stock analysis completed."})
-
-    # --------------------------------------
-    # DEFAULT NOVA RESPONSE
-    # --------------------------------------
     else:
-        reply = nova_brain(user_input)
-        with st.chat_message("assistant"):
-            st.write(reply)
-        st.session_state.history.append({"role": "assistant", "content": reply})
+        # OpenAI response
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": "You are NOVA, a helpful assistant."},
+                {"role": "user", "content": user_input}
+            ]
+        )
+        bot_reply = response.choices[0].message.content
+
+    # Show bot reply
+    st.session_state.history.append({"role": "assistant", "content": bot_reply})
+
+    with st.chat_message("assistant"):
+        st.write(bot_reply)
