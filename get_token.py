@@ -6,13 +6,11 @@ st.title("Google OAuth Refresh Token Generator")
 
 CLIENT_ID = st.secrets.get("client_id", "")
 CLIENT_SECRET = st.secrets.get("client_secret", "")
-REDIRECT_URI = "urn:ietf:wg:oauth:2.0:oob"
+REDIRECT_URI = st.secrets.get("redirect_uri", "")
 
-if not CLIENT_ID or not CLIENT_SECRET:
-    st.error("Missing client_id or client_secret in Streamlit secrets.")
+if not CLIENT_ID or not CLIENT_SECRET or not REDIRECT_URI:
+    st.error("Missing client_id, client_secret, or redirect_uri in Streamlit secrets.")
     st.stop()
-
-st.markdown("### Step 1 — Click the button below to get your Google OAuth URL.")
 
 scope = urllib.parse.quote(
     "https://www.googleapis.com/auth/gmail.readonly "
@@ -20,41 +18,38 @@ scope = urllib.parse.quote(
 )
 
 auth_url = (
-    "https://accounts.google.com/o/oauth2/v2/auth"
-    "?response_type=code"
-    f"&client_id={CLIENT_ID}"
-    f"&redirect_uri={REDIRECT_URI}"
-    f"&scope={scope}"
-    "&access_type=offline"
-    "&prompt=consent"
+    f"https://accounts.google.com/o/oauth2/v2/auth?"
+    f"client_id={CLIENT_ID}&"
+    f"redirect_uri={REDIRECT_URI}&"
+    f"response_type=code&"
+    f"scope={scope}&"
+    f"access_type=offline&"
+    f"prompt=consent"
 )
 
-if st.button("Generate Google OAuth URL"):
+st.markdown("### Step 1 — Click to generate OAuth login URL")
+if st.button("Generate URL"):
     st.code(auth_url)
 
-st.markdown("### Step 2 — Paste the code Google gives you:")
+st.markdown("### Step 2 — Paste the code Google gives you below")
+auth_code = st.text_input("Authorization code:")
 
-auth_code = st.text_input("Enter authorization code here")
+if st.button("Get Refresh Token"):
+    token_url = "https://oauth2.googleapis.com/token"
+    data = {
+        "code": auth_code,
+        "client_id": CLIENT_ID,
+        "client_secret": CLIENT_SECRET,
+        "redirect_uri": REDIRECT_URI,
+        "grant_type": "authorization_code",
+    }
 
-if st.button("Exchange code for refresh token"):
-    if not auth_code:
-        st.error("Please paste the authorization code first.")
+    r = requests.post(token_url, data=data)
+    response = r.json()
+
+    if "refresh_token" in response:
+        st.success("Here is your refresh token:")
+        st.code(response["refresh_token"])
     else:
-        token_url = "https://oauth2.googleapis.com/token"
-        data = {
-            "code": auth_code,
-            "client_id": CLIENT_ID,
-            "client_secret": CLIENT_SECRET,
-            "redirect_uri": REDIRECT_URI,
-            "grant_type": "authorization_code"
-        }
-
-        r = requests.post(token_url, data=data)
-        result = r.json()
-
-        if "refresh_token" in result:
-            st.success("REFRESH TOKEN GENERATED!")
-            st.code(result["refresh_token"])
-        else:
-            st.error("Failed to obtain refresh token.")
-            st.json(result)
+        st.error("Failed to get refresh token.")
+        st.json(response)
