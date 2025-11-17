@@ -3,7 +3,7 @@ from openai import OpenAI
 
 client = OpenAI()
 
-st.title("Simple AI Demo (This One Will Not Break)")
+st.title("Simple AI Demo ")
 user_input = st.text_input("Type something:")
 
 if user_input:
