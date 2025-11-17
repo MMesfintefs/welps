@@ -6,10 +6,9 @@ import os
 import re
 import streamlit as st
 import yfinance as yf
-from openai import OpenAI
 import requests
-from datetime import datetime
-import pytz
+import datetime
+from openai import OpenAI
 
 # =========================================================
 # PAGE SETUP
@@ -21,7 +20,7 @@ st.set_page_config(
     initial_sidebar_state="collapsed",
 )
 
-# hide sidebar & hamburger
+# Hide sidebar & hamburger
 st.markdown(
     """
     <style>
@@ -32,83 +31,59 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
+# =========================================================
+# HEADER
+# =========================================================
 st.markdown(
     "<h1 style='font-size:48px; color:#d2ffd0;'>✨ NOVA</h1>",
     unsafe_allow_html=True,
 )
 
 # =========================================================
-# WEATHER FUNCTION (REAL API)
+# WEATHER + DATE + TIME DASHBOARD
 # =========================================================
 
-def get_weather(city: str):
-    api_key = st.secrets.get("WEATHER_API_KEY", "")
+def fetch_weather(city="Boston"):
+    api_key = os.getenv("WEATHER_API_KEY")
     if not api_key:
-        return {"error": "Missing WEATHER_API_KEY in Streamlit secrets."}
+        return None
 
     url = f"https://api.openweathermap.org/data/2.5/weather?q={city}&appid={api_key}&units=imperial"
-
     try:
-        response = requests.get(url)
-        data = response.json()
+        r = requests.get(url)
+        data = r.json()
+        if "main" not in data:
+            return None
 
-        if data.get("cod") != 200:
-            return {"error": f"No weather info for {city}"}
-
-        weather_info = {
-            "city": city.title(),
-            "temp": round(data["main"]["temp"]),
-            "condition": data["weather"][0]["description"].title(),
+        return {
+            "city": city,
+            "temp": int(data["main"]["temp"]),
+            "desc": data["weather"][0]["description"].title(),
             "wind": data["wind"]["speed"],
             "humidity": data["main"]["humidity"]
         }
-        return weather_info
-
-    except Exception as e:
-        return {"error": str(e)}
-
-
-# =========================================================
-# WEATHER + TIME DASHBOARD (TOP OF APP)
-# =========================================================
-col1, col2 = st.columns([1, 2])
-
-# Time and date for Boston
-with col1:
-    try:
-        tz = pytz.timezone("America/New_York")
-        now = datetime.now(tz)
-        st.markdown(
-            f"""
-            <div style="font-size:20px; color:#C2F8CB;">
-                📅 <b>{now.strftime("%A, %B %d")}</b><br>
-                ⏰ {now.strftime("%I:%M %p")}
-            </div>
-            """,
-            unsafe_allow_html=True
-        )
     except:
-        pass
+        return None
 
-# Weather snapshot for Boston
+
+weather = fetch_weather("Boston")
+now = datetime.datetime.now()
+
+col1, col2 = st.columns(2)
+
+with col1:
+    st.markdown(f"📅 **{now.strftime('%A, %B %d')}**")
+    st.markdown(f"⏰ **{now.strftime('%I:%M %p')}**")
+
 with col2:
-    weather = get_weather("Boston")
-    if "error" in weather:
+    if weather:
+        st.markdown(f"🌤️ **{weather['city']}**")
+        st.markdown(f"**{weather['desc']} — {weather['temp']}°F**")
         st.markdown(
-            f"<div style='font-size:18px; color:#FF8080;'>🌤️ Weather unavailable — {weather['error']}</div>",
-            unsafe_allow_html=True,
+            f"💨 Wind: {weather['wind']} mph | 💧 Humidity: {weather['humidity']}%"
         )
     else:
-        st.markdown(
-            f"""
-            <div style="font-size:20px; color:#C2F8CB;">
-                🌤️ <b>{weather['city']}</b><br>
-                {weather['condition']} — {weather['temp']}°F<br>
-                💨 Wind: {weather['wind']} mph | 💧 Humidity: {weather['humidity']}%
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
+        st.markdown("🌤️ Weather unavailable")
 
 # =========================================================
 # OPENAI CLIENT
@@ -213,26 +188,113 @@ def handle_fitness(user_input):
     return reply.choices[0].message.content
 
 # =========================================================
-# FINANCE COACH
+# WEATHER (AI FORECAST WHEN ASKED)
 # =========================================================
-FITNESS_KEYWORDS = [
-    "workout", "gym", "exercise", "fitness", "routine",
-    "abs", "arms", "legs", "push day", "pull day", "back day"
+WEATHER_KEYWORDS = [
+    "weather", "forecast", "cold", "hot", "rain", "sunny"
 ]
 
-def handle_fitness(user_input):
+def handle_weather(user_input):
     sys_prompt = (
-        "You are NOVA, a fitness coach. "
-        "Give a simple workout plan (5–7 exercises) with sets & reps. "
-        "Keep it beginner-friendly and safe. No advanced jargon."
+        "You are NOVA, generating a fictional but realistic weather "
+        "forecast for any city. Include: temperature, conditions, and "
+        "a clothing suggestion. Keep it short."
     )
-
-    reply = client.chat.completions.create(
+    res = client.chat.completions.create(
         model="gpt-4.1-mini",
         messages=[
             {"role": "system", "content": sys_prompt},
             {"role": "user", "content": user_input},
         ]
     )
+    return res.choices[0].message.content
 
-    return reply.choices[0].message.content
+# =========================================================
+# FINANCE COACH
+# =========================================================
+FINANCE_KEYWORDS = [
+    "budget", "save", "money", "invest", "finance",
+    "expenses", "financial plan"
+]
+
+def handle_finance(user_input):
+    sys_prompt = (
+        "You are NOVA, a simple finance coach. "
+        "Give a short budgeting plan, savings suggestions, "
+        "and basic investment guidance. No complex math."
+    )
+    res = client.chat.completions.create(
+        model="gpt-4.1-mini",
+        messages=[
+            {"role": "system", "content": sys_prompt},
+            {"role": "user", "content": user_input},
+        ]
+    )
+    return res.choices[0].message.content
+
+# =========================================================
+# FLIGHT LOOKUP
+# =========================================================
+FLIGHT_KEYWORDS = [
+    "flight", "flights", "airline", "ticket", "fly to"
+]
+
+def handle_flights(user_input):
+    sys_prompt = (
+        "You are NOVA. Generate realistic flight info: "
+        "routes, average prices, best departure times, and airlines. "
+        "Keep it short and helpful."
+    )
+    res = client.chat.completions.create(
+        model="gpt-4.1-mini",
+        messages=[
+            {"role": "system", "content": sys_prompt},
+            {"role": "user", "content": user_input},
+        ]
+    )
+    return res.choices[0].message.content
+
+# =========================================================
+# GENERAL CHAT
+# =========================================================
+def handle_general(user_input):
+    res = client.chat.completions.create(
+        model="gpt-4.1-mini",
+        messages=[
+            {"role": "system", "content": "You are NOVA. Short, warm, helpful."},
+            {"role": "user", "content": user_input},
+        ]
+    )
+    return res.choices[0].message.content
+
+# =========================================================
+# MAIN ROUTER
+# =========================================================
+user = st.chat_input("Ask Nova anything…")
+
+if user:
+    st.chat_message("user").write(user)
+    lower = user.lower()
+
+    if any(k in lower for k in ["stock", "price", "ticker"]):
+        result = handle_stock(user)
+        if result:
+            st.chat_message("assistant").write(result)
+
+    elif any(k in lower for k in TRAVEL_KEYWORDS):
+        st.chat_message("assistant").write(handle_trip(user))
+
+    elif any(k in lower for k in FITNESS_KEYWORDS):
+        st.chat_message("assistant").write(handle_fitness(user))
+
+    elif any(k in lower for k in WEATHER_KEYWORDS):
+        st.chat_message("assistant").write(handle_weather(user))
+
+    elif any(k in lower for k in FINANCE_KEYWORDS):
+        st.chat_message("assistant").write(handle_finance(user))
+
+    elif any(k in lower for k in FLIGHT_KEYWORDS):
+        st.chat_message("assistant").write(handle_flights(user))
+
+    else:
+        st.chat_message("assistant").write(handle_general(user))
