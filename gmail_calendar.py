@@ -114,4 +114,101 @@ def read_last_5_emails():
             {
                 "subject": subject,
                 "from_": from_,
-                "d
+                "date": date_str,
+                "snippet": snippet,
+            }
+        )
+
+    return emails
+
+
+def _get_header(headers, name):
+    for h in headers:
+        if h.get("name") == name:
+            return h.get("value")
+    return None
+
+
+# ---------------------------------------------------
+# GMAIL — Send an email (optional)
+# ---------------------------------------------------
+def send_email(to: str, subject: str, body: str):
+    """
+    Basic text-only email sender using Gmail API.
+    Not currently wired into NOVA UI, but available if needed.
+    """
+    creds = _get_credentials()
+    service = build("gmail", "v1", credentials=creds)
+
+    from email.mime.text import MIMEText
+
+    message = MIMEText(body)
+    message["to"] = to
+    message["subject"] = subject
+
+    raw = base64.urlsafe_b64encode(message.as_bytes()).decode("utf-8")
+    send_body = {"raw": raw}
+
+    service.users().messages().send(userId="me", body=send_body).execute()
+
+
+# ---------------------------------------------------
+# CALENDAR — List upcoming events
+# ---------------------------------------------------
+def get_calendar_events(max_events: int = 10):
+    """
+    Returns a list of upcoming events on the primary calendar, each as:
+    {
+      "summary": str,
+      "start": str,
+      "end": str,
+      "location": str | None,
+    }
+    """
+    creds = _get_credentials()
+    service = build("calendar", "v3", credentials=creds)
+
+    now = dt.datetime.utcnow().isoformat() + "Z"  # 'Z' = UTC time
+
+    events_result = service.events().list(
+        calendarId="primary",
+        timeMin=now,
+        maxResults=max_events,
+        singleEvents=True,
+        orderBy="startTime",
+    ).execute()
+
+    items = events_result.get("items", [])
+    parsed = []
+
+    for e in items:
+        summary = e.get("summary", "(No title)")
+        start = _format_event_time(e.get("start"))
+        end = _format_event_time(e.get("end"))
+        location = e.get("location")
+
+        parsed.append(
+            {
+                "summary": summary,
+                "start": start,
+                "end": end,
+                "location": location,
+            }
+        )
+
+    return parsed
+
+
+def _format_event_time(time_dict):
+    if not time_dict:
+        return None
+    # can be all-day ("date") or specific ("dateTime")
+    if "dateTime" in time_dict:
+        try:
+            dt_obj = dt.datetime.fromisoformat(time_dict["dateTime"].replace("Z", "+00:00"))
+            return dt_obj.strftime("%Y-%m-%d %H:%M")
+        except Exception:
+            return time_dict["dateTime"]
+    if "date" in time_dict:
+        return time_dict["date"]
+    return None
