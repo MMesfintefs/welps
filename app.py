@@ -4,15 +4,15 @@ import streamlit as st
 import yfinance as yf
 from openai import OpenAI
 
-# ------------------------------------
+# ------------------------------------------------
 # Page Setup
-# ------------------------------------
-st.set_page_config(page_title="NOVA", page_icon="✨")
-st.title("✨ NOVA ")
+# ------------------------------------------------
+st.set_page_config(page_title="NOVA", page_icon="✨", layout="wide")
+st.title("✨ NOVA")
 
-# ------------------------------------
-# OpenAI Key
-# ------------------------------------
+# ------------------------------------------------
+# Load OpenAI Key
+# ------------------------------------------------
 OPENAI_KEY = st.secrets.get("OPENAI_API_KEY", None)
 
 if OPENAI_KEY:
@@ -21,25 +21,15 @@ if OPENAI_KEY:
 else:
     client = None
 
-# ------------------------------------
-# Sidebar
-# ------------------------------------
-st.sidebar.title("Commands")
-st.sidebar.subheader("Stocks")
-st.sidebar.write("• price of AAPL")
-st.sidebar.write("• check TSLA and MSFT")
-
-st.sidebar.subheader("Chat")
-st.sidebar.write("• ask anything")
-
-# ------------------------------------
-# Stock Lookup — ZERO try/except
-# ------------------------------------
+# ------------------------------------------------
+# Stock Lookup (no try/except)
+# ------------------------------------------------
 def lookup_stock(ticker: str):
     data = yf.Ticker(ticker).history(period="1d")
     if data.empty:
         return None
     return float(data["Close"].iloc[-1])
+
 
 def handle_stocks(text):
     tickers = re.findall(r"\b[A-Z]{2,5}\b", text.upper())
@@ -55,11 +45,34 @@ def handle_stocks(text):
             output += f"• **{t}** — ${price:.2f}\n"
         else:
             output += f"• **{t}** — No data available\n"
+
     return output
 
-# ------------------------------------
-# OpenAI Chat — ZERO try blocks
-# ------------------------------------
+
+# ------------------------------------------------
+# Email Question Fallback (no API access)
+# ------------------------------------------------
+EMAIL_QUESTIONS = [
+    "email",
+    "inbox",
+    "did i get",
+    "did i receive",
+    "new messages",
+    "new email",
+    "check mail",
+    "check my email"
+]
+
+def handle_email_fallback():
+    return (
+        "📬 I don’t have access to your inbox right now, "
+        "but you can check your Gmail app to see any recent messages."
+    )
+
+
+# ------------------------------------------------
+# OpenAI Chat
+# ------------------------------------------------
 def chat_with_openai(message):
     if client is None:
         return "AI not configured (missing OPENAI_API_KEY)."
@@ -68,24 +81,34 @@ def chat_with_openai(message):
         model="gpt-4o-mini",
         messages=[{"role": "user", "content": message}]
     )
+
     return completion.choices[0].message.content
 
-# ------------------------------------
-# Main Chat Input
-# ------------------------------------
+
+# ------------------------------------------------
+# MAIN CHAT INPUT
+# ------------------------------------------------
 user_input = st.chat_input("Ask NOVA…")
 
 if user_input:
 
+    # show user message
     with st.chat_message("user"):
         st.write(user_input)
 
-    # stock rule
-    if any(w in user_input.lower() for w in ["price", "stock", "check"]):
+    lower_msg = user_input.lower()
+
+    # 1. Stock commands
+    if any(w in lower_msg for w in ["price", "stock", "check", "market"]):
         with st.chat_message("assistant"):
             st.write(handle_stocks(user_input))
 
-    # chat rule
+    # 2. Email related questions
+    elif any(w in lower_msg for w in EMAIL_QUESTIONS):
+        with st.chat_message("assistant"):
+            st.write(handle_email_fallback())
+
+    # 3. Normal chat (OpenAI)
     else:
         with st.chat_message("assistant"):
             st.write(chat_with_openai(user_input))
