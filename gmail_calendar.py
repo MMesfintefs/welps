@@ -1,124 +1,117 @@
 # =========================
 # FILE: gmail_calendar.py
 # =========================
+"""
+Gmail & Google Calendar helpers for NOVA.
+
+Assumes the following keys exist in st.secrets:
+
+- client_id
+- client_secret
+- redirect_uri
+- refresh_token
+
+Scopes:
+- Gmail readonly
+- Gmail send (optional)
+- Calendar read
+"""
+
+import datetime as dt
+import base64
+from email.utils import parsedate_to_datetime
 
 import streamlit as st
 from google.oauth2.credentials import Credentials
-from google_auth_oauthlib.flow import Flow
 from googleapiclient.discovery import build
 
-CLIENT_ID = st.secrets["client_id"]
-CLIENT_SECRET = st.secrets["client_secret"]
-REDIRECT_URI = st.secrets["redirect_uri"]
-
+# Scopes must match what you used when generating the refresh token
 SCOPES = [
-    "https://www.googleapis.com/auth/calendar",
     "https://www.googleapis.com/auth/gmail.readonly",
-    "https://www.googleapis.com/auth/gmail.send"
+    "https://www.googleapis.com/auth/gmail.send",
+    "https://www.googleapis.com/auth/calendar.readonly",
 ]
 
+
 # ---------------------------------------------------
-# Google OAuth Flow
+# INTERNAL — Load stored credentials
 # ---------------------------------------------------
-def google_auth_flow():
-    return Flow.from_client_config(
+def _get_credentials() -> Credentials:
+    """
+    Constructs a Credentials object from values stored in Streamlit secrets.
+    Uses a refresh_token so access tokens auto-refresh in the background.
+    """
+    required_keys = ["client_id", "client_secret", "refresh_token", "redirect_uri"]
+    for k in required_keys:
+        if k not in st.secrets or not st.secrets[k]:
+            raise RuntimeError(f"Missing `{k}` in Streamlit secrets.")
+
+    client_id = st.secrets["client_id"]
+    client_secret = st.secrets["client_secret"]
+    refresh_token = st.secrets["refresh_token"]
+
+    creds = Credentials.from_authorized_user_info(
         {
-            "installed": {
-                "client_id": CLIENT_ID,
-                "client_secret": CLIENT_SECRET,
-                "auth_uri": "https://accounts.google.com/o/oauth2/auth",
-                "token_uri": "https://oauth2.googleapis.com/token",
-                "redirect_uris": [REDIRECT_URI]
-            }
+            "client_id": client_id,
+            "client_secret": client_secret,
+            "refresh_token": refresh_token,
+            "token_uri": "https://oauth2.googleapis.com/token",
         },
         scopes=SCOPES,
-        redirect_uri=REDIRECT_URI
     )
+    return creds
+
 
 # ---------------------------------------------------
 # GMAIL — Read last 5 emails
 # ---------------------------------------------------
 def read_last_5_emails():
-    """Returns the subjects of the last 5 emails."""
-    creds = _load_credentials()
+    """
+    Returns a list of up to 5 emails from the user's inbox, each as:
+    {
+      "subject": str,
+      "from_": str,
+      "date": str (ISO-like),
+      "snippet": str,
+    }
+    """
+    creds = _get_credentials()
     service = build("gmail", "v1", credentials=creds)
 
     results = service.users().messages().list(
-        userId="me", maxResults=5
+        userId="me",
+        maxResults=5,
+        labelIds=["INBOX"],
     ).execute()
 
     messages = results.get("messages", [])
-    email_list = []
+    emails = []
 
     for msg in messages:
         msg_data = service.users().messages().get(
-            userId="me", id=msg["id"]
+            userId="me",
+            id=msg["id"],
+            format="metadata",
+            metadataHeaders=["Subject", "From", "Date"],
         ).execute()
 
-        headers = msg_data["payload"]["headers"]
-        subject = next(
-            (h["value"] for h in headers if h["name"] == "Subject"),
-            "(No Subject)"
-        )
-        email_list.append(subject)
+        headers = msg_data.get("payload", {}).get("headers", [])
+        subject = _get_header(headers, "Subject") or "(No subject)"
+        from_ = _get_header(headers, "From") or "(Unknown sender)"
+        date_raw = _get_header(headers, "Date")
+        snippet = msg_data.get("snippet", "")
 
-    return email_list
+        date_str = None
+        if date_raw:
+            try:
+                dt_obj = parsedate_to_datetime(date_raw)
+                # normalize to local-ish string; you can format however you like
+                date_str = dt_obj.strftime("%Y-%m-%d %H:%M")
+            except Exception:
+                date_str = date_raw
 
-# ---------------------------------------------------
-# GMAIL — Send an email
-# ---------------------------------------------------
-def send_email(creds, to, subject, body):
-    from email.mime.text import MIMEText
-    import base64
-
-    message = MIMEText(body)
-    message["to"] = to
-    message["subject"] = subject
-
-    raw = base64.urlsafe_b64encode(message.as_bytes()).decode()
-    service = build("gmail", "v1", credentials=creds)
-
-    service.users().messages().send(
-        userId="me", body={"raw": raw}
-    ).execute()
-
-# ---------------------------------------------------
-# CALENDAR — List next 10 events
-# ---------------------------------------------------
-def get_calendar_events():
-    creds = _load_credentials()
-    service = build("calendar", "v3", credentials=creds)
-
-    events = service.events().list(
-        calendarId="primary",
-        maxResults=10,
-        singleEvents=True,
-        orderBy="startTime"
-    ).execute()
-
-    items = events.get("items", [])
-    parsed = []
-
-    for e in items:
-        summary = e.get("summary", "(No Title)")
-        start = e["start"].get("dateTime", e["start"].get("date"))
-        parsed.append(f"{start} — {summary}")
-
-    return parsed
-
-# ---------------------------------------------------
-# INTERNAL — Load stored credentials
-# ---------------------------------------------------
-def _load_credentials():
-    """
-    Loads the OAuth credentials stored in Streamlit secrets.
-    """
-    return Credentials.from_authorized_user_info(
-        {
-            "client_id": CLIENT_ID,
-            "client_secret": CLIENT_SECRET,
-            "refresh_token": st.secrets["refresh_token"],
-            "token_uri": "https://oauth2.googleapis.com/token"
-        },
-        SCOPES
-    )
+        emails.append(
+            {
+                "subject": subject,
+                "from_": from_,
+                "d
