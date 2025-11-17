@@ -1,9 +1,10 @@
 # ===============================
-# NOVA — Expanded Streamlit Agent
+# NOVA — Agentic Streamlit App
 # ===============================
 
 import os
 import re
+import requests
 import datetime as dt
 
 import streamlit as st
@@ -12,18 +13,19 @@ import yfinance as yf
 import plotly.express as px
 
 from gmail_calendar import read_last_5_emails, get_calendar_events
+from agentic_agent import AgenticTextAssistant, render_reasoning_block
 
 
 # ---------------------------------------------------
-# OPENAI SAFE INITIALIZATION (critical for Streamlit!)
+# SAFE OPENAI INITIALIZATION
 # ---------------------------------------------------
 OPENAI_KEY = st.secrets.get("OPENAI_API_KEY", "").strip()
 client = None
 
 def get_openai_client():
     """
-    We only initialize OpenAI when needed.
-    This avoids the TypeError crash you experienced on Streamlit Cloud.
+    Safely initialize OpenAI client ONLY when needed.
+    Fixes Streamlit's proxy injection bug.
     """
     global client
 
@@ -33,12 +35,11 @@ def get_openai_client():
     if not OPENAI_KEY:
         return None
 
-    # Must set this BEFORE constructing OpenAI()
     os.environ["OPENAI_API_KEY"] = OPENAI_KEY
 
     try:
         from openai import OpenAI
-        client = OpenAI()
+        client = OpenAI(http_client=None)   # prevents the 'proxies' error
         return client
     except Exception as e:
         st.error(f"OpenAI initialization error: {e}")
@@ -46,16 +47,44 @@ def get_openai_client():
 
 
 # ---------------------------------------------------
-# STREAMLIT PAGE CONFIG
+# STREAMLIT CONFIG
 # ---------------------------------------------------
 st.set_page_config(
-    page_title="NOVA — Agentic Assistant",
+    page_title="NOVA",
     page_icon="✨",
-    layout="wide",
+    layout="wide"
 )
 
-st.title("✨ NOVA — Agentic AI Assistant")
-st.caption("Stocks · Gmail · Calendar · Smart Chat")
+st.title("✨ NOVA")
+
+
+# ---------------------------------------------------
+# SNAPSHOT: Weather + Time + Date
+# ---------------------------------------------------
+col1, col2 = st.columns([1, 1])
+
+# TIME + DATE
+with col1:
+    now = dt.datetime.now()
+    st.markdown(f"### 🕒 {now.strftime('%A, %B %d — %I:%M %p')}")
+
+# WEATHER
+with col2:
+    WEATHER_KEY = st.secrets.get("WEATHER_API_KEY", "")
+    DEFAULT_CITY = "Boston"
+
+    if WEATHER_KEY:
+        try:
+            url = f"https://api.openweathermap.org/data/2.5/weather?q={DEFAULT_CITY}&appid={WEATHER_KEY}&units=metric"
+            data = requests.get(url).json()
+            temp = data["main"]["temp"]
+            cond = data["weather"][0]["description"].title()
+            st.markdown(f"### 🌤 {DEFAULT_CITY}")
+            st.markdown(f"**{temp}°C — {cond}**")
+        except:
+            st.markdown("### 🌤 Weather unavailable")
+    else:
+        st.markdown("### 🌤 Weather key missing")
 
 
 # ---------------------------------------------------
@@ -63,58 +92,56 @@ st.caption("Stocks · Gmail · Calendar · Smart Chat")
 # ---------------------------------------------------
 with st.sidebar:
     st.subheader("Status")
-    st.markdown(f"- OpenAI: {'✅' if OPENAI_KEY else '❌ missing OPENAI_API_KEY'}")
+
+    st.markdown(f"- OpenAI: {'✅' if OPENAI_KEY else '❌ Missing OPENAI_API_KEY'}")
 
     google_ok = all(
-        k in st.secrets and st.secrets[k] 
+        st.secrets.get(k, "").strip() 
         for k in ["client_id", "client_secret", "refresh_token", "redirect_uri"]
     )
-    st.markdown(f"- Google APIs: {'✅' if google_ok else '❌ missing Google credentials'}")
+    st.markdown(f"- Google APIs: {'✅' if google_ok else '❌ Missing Google credentials'}")
 
     st.markdown("---")
     st.subheader("Commands")
     st.markdown("""
-- **Stocks**  
+- **Stocks:**  
   - “Price of AAPL”  
-  - “Check TSLA and MSFT”
-- **Emails**  
+  - “Check TSLA + MSFT”
+
+- **Emails:**  
   - “Read my inbox”
-- **Calendar**  
+
+- **Calendar:**  
   - “Upcoming events”
-- **Chat**  
+
+- **Chat:**  
   - Anything else
 """)
 
 
 # ---------------------------------------------------
-# Utility: extract tickers
+# TICKER EXTRACTION
 # ---------------------------------------------------
 def extract_tickers(text):
     tokens = re.split(r"[,\s]+", text.upper())
     tickers = [t for t in tokens if t.isalpha() and 1 <= len(t) <= 5]
 
     seen = set()
-    ordered = []
+    result = []
     for t in tickers:
         if t not in seen:
-            ordered.append(t)
+            result.append(t)
             seen.add(t)
-
-    return ordered
+    return result
 
 
 # ---------------------------------------------------
-# HANDLER: Stocks
+# STOCK HANDLER
 # ---------------------------------------------------
 def handle_stocks(msg):
     tickers = extract_tickers(msg)
-
     if not tickers:
-        return {
-            "mode": "stocks",
-            "text": "Which stock symbol? Example: AAPL, TSLA, NVDA.",
-            "stocks": [],
-        }
+        return {"mode": "stocks", "text": "Which stock?", "stocks": []}
 
     results = []
 
@@ -122,31 +149,17 @@ def handle_stocks(msg):
         try:
             hist = yf.Ticker(t).history(period="1mo", interval="1d")
             if hist.empty:
-                results.append({
-                    "ticker": t,
-                    "price": None,
-                    "hist": None,
-                    "error": "No data available."
-                })
+                results.append({"ticker": t, "price": None, "hist": None,
+                                "error": "No data available."})
                 continue
 
-            last_close = float(hist["Close"].iloc[-1])
+            last = float(hist["Close"].iloc[-1])
             df = hist[["Close"]].rename(columns={"Close": "close"}).reset_index()
 
-            results.append({
-                "ticker": t,
-                "price": last_close,
-                "hist": df,
-                "error": None
-            })
+            results.append({"ticker": t, "price": last, "hist": df, "error": None})
 
         except Exception as e:
-            results.append({
-                "ticker": t,
-                "price": None,
-                "hist": None,
-                "error": str(e)
-            })
+            results.append({"ticker": t, "price": None, "hist": None, "error": str(e)})
 
     lines = []
     for r in results:
@@ -163,58 +176,42 @@ def handle_stocks(msg):
 
 
 # ---------------------------------------------------
-# HANDLER: Emails
+# EMAIL HANDLER
 # ---------------------------------------------------
 def handle_emails():
     try:
         emails = read_last_5_emails()
-        if not emails:
-            return {
-                "mode": "emails",
-                "text": "No recent emails found.",
-                "emails": []
-            }
-
         return {
             "mode": "emails",
             "text": f"I pulled your last {len(emails)} emails:",
-            "emails": emails,
+            "emails": emails
         }
-
     except Exception as e:
         return {"mode": "emails", "text": f"Email error: {e}", "emails": []}
 
 
 # ---------------------------------------------------
-# HANDLER: Calendar
+# CALENDAR HANDLER
 # ---------------------------------------------------
 def handle_calendar():
     try:
         events = get_calendar_events(max_events=10)
-        if not events:
-            return {
-                "mode": "calendar",
-                "text": "No upcoming events found.",
-                "events": []
-            }
-
         return {
             "mode": "calendar",
             "text": f"Here are your next {len(events)} events:",
-            "events": events,
+            "events": events
         }
-
     except Exception as e:
         return {"mode": "calendar", "text": f"Calendar error: {e}", "events": []}
 
 
 # ---------------------------------------------------
-# HANDLER: Fallback AI
+# FALLBACK CHAT
 # ---------------------------------------------------
 def handle_chat(msg):
     client = get_openai_client()
     if client is None:
-        return {"mode": "chat", "text": "AI not configured. Missing OPENAI_API_KEY."}
+        return {"mode": "chat", "text": "Missing OPENAI_API_KEY."}
 
     try:
         out = client.responses.create(
@@ -222,13 +219,12 @@ def handle_chat(msg):
             input=msg
         )
         return {"mode": "chat", "text": out.output_text}
-
     except Exception as e:
         return {"mode": "chat", "text": f"AI error: {e}"}
 
 
 # ---------------------------------------------------
-# Dispatcher
+# DISPATCHER
 # ---------------------------------------------------
 def nova_dispatch(msg):
     low = msg.lower()
@@ -239,14 +235,14 @@ def nova_dispatch(msg):
     if any(k in low for k in ["email", "inbox", "gmail"]):
         return handle_emails()
 
-    if any(k in low for k in ["calendar", "schedule", "event", "events"]):
+    if any(k in low for k in ["calendar", "schedule", "events"]):
         return handle_calendar()
 
     return handle_chat(msg)
 
 
 # ---------------------------------------------------
-# Rendering UI blocks
+# RENDER BLOCK
 # ---------------------------------------------------
 def render(result):
     mode = result["mode"]
@@ -259,11 +255,9 @@ def render(result):
                 continue
 
             st.markdown(f"### {r['ticker']} — ${r['price']:.2f}")
-
-            df = r["hist"]
-            fig = px.line(df, x="Date", y="close", title=f"{r['ticker']} — last 1 month")
-            fig.update_layout(height=300, margin=dict(l=10, r=10, t=40, b=10))
-
+            fig = px.line(r["hist"], x="Date", y="close",
+                          title=f"{r['ticker']} — last 1 month")
+            fig.update_layout(height=300)
             st.plotly_chart(fig, use_container_width=True)
 
     elif mode == "emails":
@@ -272,41 +266,71 @@ def render(result):
             with st.container(border=True):
                 st.markdown(f"**Subject:** {e['subject']}")
                 st.markdown(f"*From:* {e['from_']}")
-                if e["date"]:
-                    st.markdown(f"*Date:* {e['date']}")
-                if e["snippet"]:
-                    st.write(e["snippet"])
+                st.markdown(f"*Date:* {e['date']}")
+                st.write(e["snippet"])
 
     elif mode == "calendar":
         st.markdown(result["text"])
         for ev in result["events"]:
             with st.container(border=True):
                 st.markdown(f"**{ev['summary']}**")
-                st.markdown(f"*Start:* {ev['start']}  →  *End:* {ev['end']}")
+                st.markdown(f"*Start:* {ev['start']} → *End:* {ev['end']}")
                 if ev["location"]:
                     st.markdown(f"*Location:* {ev['location']}")
 
-    else:  # chat
+    else:
         st.markdown(result["text"])
 
 
 # ---------------------------------------------------
-# CHAT SESSION STATE
+# SESSION STATE
 # ---------------------------------------------------
 if "history" not in st.session_state:
     st.session_state["history"] = []
 
-for turn in st.session_state["history"]:
-    st.chat_message("user").write(turn["user"])
-    with st.chat_message("assistant"):
-        render(turn["result"])
+if "agentic_assistant" not in st.session_state:
+    st.session_state["agentic_assistant"] = AgenticTextAssistant()
 
-user_input = st.chat_input("Ask NOVA something...")
+if "agentic_history" not in st.session_state:
+    st.session_state["agentic_history"] = []
 
-if user_input:
-    result = nova_dispatch(user_input)
-    st.session_state["history"].append({"user": user_input, "result": result})
 
-    st.chat_message("user").write(user_input)
-    with st.chat_message("assistant"):
-        render(result)
+# ---------------------------------------------------
+# TABS: NOVA + AGENTIC REASONING
+# ---------------------------------------------------
+tab_nova, tab_agentic = st.tabs(["✨ NOVA Chat", "🧠 Agentic Reasoning"])
+
+
+# === TAB 1 — NOVA CHAT ===
+with tab_nova:
+    for turn in st.session_state["history"]:
+        st.chat_message("user").write(turn["user"])
+        with st.chat_message("assistant"):
+            render(turn["result"])
+
+    user_input = st.chat_input("Ask NOVA something...")
+    if user_input:
+        result = nova_dispatch(user_input)
+        st.session_state["history"].append({"user": user_input, "result": result})
+
+        st.chat_message("user").write(user_input)
+        with st.chat_message("assistant"):
+            render(result)
+
+
+# === TAB 2 — AGENTIC REASONING ===
+with tab_agentic:
+    st.markdown("Type something to see NOVA's internal reasoning, intents, entities, and plan.")
+    text_query = st.text_input(
+        "Your text:",
+        placeholder="e.g., Summarize the benefits of renewable energy"
+    )
+
+    if st.button("Run Agentic Reasoning", disabled=not text_query.strip()):
+        assistant = st.session_state["agentic_assistant"]
+        res = assistant.process(text_query.strip())
+        st.session_state["agentic_history"].append(res)
+
+    for res in reversed(st.session_state["agentic_history"]):
+        with st.container(border=True):
+            render_reasoning_block(st, res)
