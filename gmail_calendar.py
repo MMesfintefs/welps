@@ -1,21 +1,6 @@
 # =========================
 # FILE: gmail_calendar.py
 # =========================
-"""
-Gmail & Google Calendar helpers for NOVA.
-
-Assumes the following keys exist in st.secrets:
-
-- client_id
-- client_secret
-- redirect_uri
-- refresh_token
-
-Scopes:
-- Gmail readonly
-- Gmail send (optional)
-- Calendar read
-"""
 
 import datetime as dt
 import base64
@@ -25,7 +10,8 @@ import streamlit as st
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 
-# Scopes must match what you used when generating the refresh token
+
+# SCOPES YOU MUST USE WHEN GENERATING REFRESH TOKEN
 SCOPES = [
     "https://www.googleapis.com/auth/gmail.readonly",
     "https://www.googleapis.com/auth/gmail.send",
@@ -34,143 +20,90 @@ SCOPES = [
 
 
 # ---------------------------------------------------
-# INTERNAL — Load stored credentials
+# INTERNAL — BUILD CREDS FROM SECRETS
 # ---------------------------------------------------
-def _get_credentials() -> Credentials:
-    """
-    Constructs a Credentials object from values stored in Streamlit secrets.
-    Uses a refresh_token so access tokens auto-refresh in the background.
-    """
-    required_keys = ["client_id", "client_secret", "refresh_token", "redirect_uri"]
-    for k in required_keys:
-        if k not in st.secrets or not st.secrets[k]:
-            raise RuntimeError(f"Missing `{k}` in Streamlit secrets.")
+def _get_credentials():
+    required = ["client_id", "client_secret", "refresh_token"]
+    for key in required:
+        if key not in st.secrets or not st.secrets[key]:
+            raise RuntimeError(f"Missing `{key}` in Streamlit secrets.")
 
-    client_id = st.secrets["client_id"]
-    client_secret = st.secrets["client_secret"]
-    refresh_token = st.secrets["refresh_token"]
-
-    creds = Credentials.from_authorized_user_info(
+    return Credentials.from_authorized_user_info(
         {
-            "client_id": client_id,
-            "client_secret": client_secret,
-            "refresh_token": refresh_token,
+            "client_id": st.secrets["client_id"],
+            "client_secret": st.secrets["client_secret"],
+            "refresh_token": st.secrets["refresh_token"],
             "token_uri": "https://oauth2.googleapis.com/token",
         },
         scopes=SCOPES,
     )
-    return creds
 
 
 # ---------------------------------------------------
-# GMAIL — Read last 5 emails
+# GMAIL: Read last 5 emails (structured)
 # ---------------------------------------------------
 def read_last_5_emails():
-    """
-    Returns a list of up to 5 emails from the user's inbox, each as:
-    {
-      "subject": str,
-      "from_": str,
-      "date": str (ISO-like),
-      "snippet": str,
-    }
-    """
     creds = _get_credentials()
     service = build("gmail", "v1", credentials=creds)
 
-    results = service.users().messages().list(
+    resp = service.users().messages().list(
         userId="me",
         maxResults=5,
         labelIds=["INBOX"],
     ).execute()
 
-    messages = results.get("messages", [])
+    messages = resp.get("messages", [])
     emails = []
 
-    for msg in messages:
-        msg_data = service.users().messages().get(
+    for m in messages:
+        msg = service.users().messages().get(
             userId="me",
-            id=msg["id"],
+            id=m["id"],
             format="metadata",
             metadataHeaders=["Subject", "From", "Date"],
         ).execute()
 
-        headers = msg_data.get("payload", {}).get("headers", [])
-        subject = _get_header(headers, "Subject") or "(No subject)"
-        from_ = _get_header(headers, "From") or "(Unknown sender)"
-        date_raw = _get_header(headers, "Date")
-        snippet = msg_data.get("snippet", "")
+        headers = msg.get("payload", {}).get("headers", [])
+
+        def H(name):
+            for h in headers:
+                if h.get("name") == name:
+                    return h.get("value")
+            return None
+
+        subject = H("Subject") or "(No subject)"
+        sender = H("From") or "(Unknown sender)"
+        date_raw = H("Date")
+        snippet = msg.get("snippet", "")
 
         date_str = None
         if date_raw:
             try:
                 dt_obj = parsedate_to_datetime(date_raw)
-                # normalize to local-ish string; you can format however you like
                 date_str = dt_obj.strftime("%Y-%m-%d %H:%M")
-            except Exception:
+            except:
                 date_str = date_raw
 
-        emails.append(
-            {
-                "subject": subject,
-                "from_": from_,
-                "date": date_str,
-                "snippet": snippet,
-            }
-        )
+        emails.append({
+            "subject": subject,
+            "from_": sender,
+            "date": date_str,
+            "snippet": snippet,
+        })
 
     return emails
 
 
-def _get_header(headers, name):
-    for h in headers:
-        if h.get("name") == name:
-            return h.get("value")
-    return None
-
-
 # ---------------------------------------------------
-# GMAIL — Send an email (optional)
+# CALENDAR: List upcoming events
 # ---------------------------------------------------
-def send_email(to: str, subject: str, body: str):
-    """
-    Basic text-only email sender using Gmail API.
-    Not currently wired into NOVA UI, but available if needed.
-    """
-    creds = _get_credentials()
-    service = build("gmail", "v1", credentials=creds)
-
-    from email.mime.text import MIMEText
-
-    message = MIMEText(body)
-    message["to"] = to
-    message["subject"] = subject
-
-    raw = base64.urlsafe_b64encode(message.as_bytes()).decode("utf-8")
-    send_body = {"raw": raw}
-
-    service.users().messages().send(userId="me", body=send_body).execute()
-
-
-# ---------------------------------------------------
-# CALENDAR — List upcoming events
-# ---------------------------------------------------
-def get_calendar_events(max_events: int = 10):
-    """
-    Returns a list of upcoming events on the primary calendar, each as:
-    {
-      "summary": str,
-      "start": str,
-      "end": str,
-      "location": str | None,
-    }
-    """
+def get_calendar_events(max_events=10):
     creds = _get_credentials()
     service = build("calendar", "v3", credentials=creds)
 
-    now = dt.datetime.utcnow().isoformat() + "Z"  # 'Z' = UTC time
+    now = dt.datetime.utcnow().isoformat() + "Z"
 
-    events_result = service.events().list(
+    resp = service.events().list(
         calendarId="primary",
         timeMin=now,
         maxResults=max_events,
@@ -178,37 +111,35 @@ def get_calendar_events(max_events: int = 10):
         orderBy="startTime",
     ).execute()
 
-    items = events_result.get("items", [])
-    parsed = []
+    events_raw = resp.get("items", [])
+    events = []
 
-    for e in items:
+    for e in events_raw:
         summary = e.get("summary", "(No title)")
-        start = _format_event_time(e.get("start"))
-        end = _format_event_time(e.get("end"))
         location = e.get("location")
 
-        parsed.append(
-            {
-                "summary": summary,
-                "start": start,
-                "end": end,
-                "location": location,
-            }
-        )
+        start = format_time(e.get("start"))
+        end = format_time(e.get("end"))
 
-    return parsed
+        events.append({
+            "summary": summary,
+            "start": start,
+            "end": end,
+            "location": location,
+        })
+
+    return events
 
 
-def _format_event_time(time_dict):
-    if not time_dict:
+def format_time(t):
+    if not t:
         return None
-    # can be all-day ("date") or specific ("dateTime")
-    if "dateTime" in time_dict:
+    if "dateTime" in t:
         try:
-            dt_obj = dt.datetime.fromisoformat(time_dict["dateTime"].replace("Z", "+00:00"))
+            dt_obj = dt.datetime.fromisoformat(t["dateTime"].replace("Z", "+00:00"))
             return dt_obj.strftime("%Y-%m-%d %H:%M")
-        except Exception:
-            return time_dict["dateTime"]
-    if "date" in time_dict:
-        return time_dict["date"]
+        except:
+            return t["dateTime"]
+    if "date" in t:
+        return t["date"]
     return None
