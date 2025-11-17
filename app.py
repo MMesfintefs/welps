@@ -215,12 +215,24 @@ def handle_fitness(user_input):
 # =========================================================
 # FINANCE COACH
 # =========================================================
-FINANCE_KEYWORDS = [
-    "budget", "save", "money", "invest", "finance",
-    "expenses", "financial plan"
+FITNESS_KEYWORDS = [
+    "workout", "gym", "exercise", "fitness", "routine",
+    "abs", "arms", "legs", "push day", "pull day", "back day"
 ]
 
-def handle_finance(user_input):
+def handle_fitness(user_input):
     sys_prompt = (
-        "You are NOVA, a simple finance coach. "
-        "Give a short budgeting plan, savings suggestions, "
+        "You are NOVA, a fitness coach. "
+        "Give a simple workout plan (5–7 exercises) with sets & reps. "
+        "Keep it beginner-friendly and safe. No advanced jargon."
+    )
+
+    reply = client.chat.completions.create(
+        model="gpt-4.1-mini",
+        messages=[
+            {"role": "system", "content": sys_prompt},
+            {"role": "user", "content": user_input},
+        ]
+    )
+
+    return reply.choices[0].message.content
