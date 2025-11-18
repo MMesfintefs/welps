@@ -8,6 +8,7 @@ import streamlit as st
 import yfinance as yf
 import requests
 import datetime
+import pytz
 from openai import OpenAI
 
 # =========================================================
@@ -67,7 +68,8 @@ def fetch_weather(city="Boston"):
 
 
 weather = fetch_weather("Boston")
-now = datetime.datetime.now()
+local_tz = pytz.timezone("America/New_York")
+now = datetime.datetime.now(local_tz)
 
 col1, col2 = st.columns(2)
 
